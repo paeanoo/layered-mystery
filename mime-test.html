@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MIME 类型测试</title>
+    <style>
+        body {
+            font-family: 'Microsoft YaHei', sans-serif;
+            margin: 20px;
+            background: #1a1a1a;
+            color: #ffffff;
+        }
+        .result {
+            margin: 10px 0;
+            padding: 10px;
+            border-radius: 5px;
+        }
+        .success { background: #2d5a2d; }
+        .error { background: #5a2d2d; }
+        .info { background: #2d4a5a; }
+    </style>
+</head>
+<body>
+    <h1>MIME 类型测试</h1>
+    <div id="results"></div>
+    
+    <script>
+        function addResult(message, type = 'info') {
+            const div = document.createElement('div');
+            div.className = `result ${type}`;
+            div.textContent = message;
+            document.getElementById('results').appendChild(div);
+        }
+        
+        // 测试 main.ts 的 MIME 类型
+        fetch('/src/main.ts')
+            .then(response => {
+                const mimeType = response.headers.get('content-type');
+                addResult(`main.ts MIME 类型: ${mimeType}`, 'info');
+                
+                if (mimeType === 'application/javascript' || mimeType === 'text/javascript') {
+                    addResult('✅ MIME 类型正确！', 'success');
+                } else {
+                    addResult('❌ MIME 类型错误！', 'error');
+                }
+            })
+            .catch(error => {
+                addResult(`❌ 请求失败: ${error.message}`, 'error');
+            });
+    </script>
+</body>
+</html>

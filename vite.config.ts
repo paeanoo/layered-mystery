@@ -17,6 +17,10 @@ export default defineConfig({
     middlewareMode: false,
     fs: {
       strict: false
+    },
+    // 添加明确的 MIME 类型配置
+    headers: {
+      'Content-Type': 'application/javascript'
     }
   },
   build: {
