@@ -17,7 +17,15 @@ export default defineConfig({
     target: 'es2015',
     outDir: 'dist',
     assetsDir: 'assets',
-    sourcemap: true
+    sourcemap: false, // 生产环境关闭 sourcemap
+    rollupOptions: {
+      output: {
+        manualChunks: {
+          vendor: ['vue', 'vue-router', 'pinia'],
+          supabase: ['@supabase/supabase-js']
+        }
+      }
+    }
   }
 })
 
