@@ -1,0 +1,73 @@
+/* 全局样式 - 极简扁平风格 */
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  font-family: 'Microsoft YaHei', 'PingFang SC', 'Helvetica Neue', Arial, sans-serif;
+  background: #1a1a1a;
+  color: #ffffff;
+  overflow: hidden;
+  user-select: none;
+}
+
+/* 高对比度配色方案 */
+:root {
+  --primary-bg: #1a1a1a;
+  --secondary-bg: #2d2d2d;
+  --accent-color: #00ff88;
+  --danger-color: #ff4444;
+  --warning-color: #ffaa00;
+  --text-primary: #ffffff;
+  --text-secondary: #cccccc;
+  --border-color: #444444;
+}
+
+/* 按钮样式 */
+.btn {
+  background: var(--accent-color);
+  color: var(--primary-bg);
+  border: none;
+  padding: 12px 24px;
+  border-radius: 4px;
+  font-weight: bold;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.btn:hover {
+  background: #00cc6a;
+  transform: translateY(-1px);
+}
+
+.btn:active {
+  transform: translateY(0);
+}
+
+/* 卡片样式 */
+.card {
+  background: var(--secondary-bg);
+  border: 2px solid var(--border-color);
+  border-radius: 8px;
+  padding: 16px;
+  margin: 8px;
+}
+
+/* 游戏界面布局 */
+.game-container {
+  width: 100vw;
+  height: 100vh;
+  position: relative;
+  overflow: hidden;
+}
+
+/* 响应式设计 */
+@media (max-width: 768px) {
+  .btn {
+    padding: 10px 20px;
+    font-size: 14px;
+  }
+}
+

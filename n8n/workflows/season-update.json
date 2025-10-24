@@ -1,0 +1,313 @@
+{
+  "name": "赛季更新工作流",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "value": "0 0 * * 1"
+            }
+          ]
+        }
+      },
+      "id": "cron-trigger",
+      "name": "每周触发",
+      "type": "n8n-nodes-base.cron",
+      "typeVersion": 1,
+      "position": [240, 300]
+    },
+    {
+      "parameters": {
+        "url": "https://your-project.supabase.co/rest/v1/seasons",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "supabaseApi",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "apikey",
+              "value": "={{ $credentials.supabaseApi.apiKey }}"
+            },
+            {
+              "name": "Authorization",
+              "value": "Bearer {{ $credentials.supabaseApi.apiKey }}"
+            }
+          ]
+        },
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "is_active",
+              "value": "eq.true"
+            }
+          ]
+        }
+      },
+      "id": "get-current-season",
+      "name": "获取当前赛季",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [460, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "season-exists",
+              "leftValue": "={{ $json.length }}",
+              "rightValue": 1,
+              "operator": {
+                "type": "number",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "check-season-exists",
+      "name": "检查赛季是否存在",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [680, 300]
+    },
+    {
+      "parameters": {
+        "url": "https://your-project.supabase.co/rest/v1/seasons",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "supabaseApi",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "apikey",
+              "value": "={{ $credentials.supabaseApi.apiKey }}"
+            },
+            {
+              "name": "Authorization",
+              "value": "Bearer {{ $credentials.supabaseApi.apiKey }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "is_active",
+              "value": "false"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "deactivate-current-season",
+      "name": "停用当前赛季",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [900, 200]
+    },
+    {
+      "parameters": {
+        "url": "https://your-project.supabase.co/rest/v1/seasons",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "supabaseApi",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "apikey",
+              "value": "={{ $credentials.supabaseApi.apiKey }}"
+            },
+            {
+              "name": "Authorization",
+              "value": "Bearer {{ $credentials.supabaseApi.apiKey }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "name",
+              "value": "={{ '第' + (new Date().getFullYear() - 2024 + 1) + '赛季' }}"
+            },
+            {
+              "name": "theme",
+              "value": "={{ ['极简风格', '复古像素', '未来科技', '自然生态'][Math.floor(Math.random() * 4)] }}"
+            },
+            {
+              "name": "seed",
+              "value": "={{ 'season_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9) }}"
+            },
+            {
+              "name": "start_date",
+              "value": "={{ new Date().toISOString() }}"
+            },
+            {
+              "name": "end_date",
+              "value": "={{ new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString() }}"
+            },
+            {
+              "name": "is_active",
+              "value": "true"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "create-new-season",
+      "name": "创建新赛季",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [900, 400]
+    },
+    {
+      "parameters": {
+        "url": "https://your-project.supabase.co/rest/v1/rpc/update_player_rank",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "supabaseApi",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "apikey",
+              "value": "={{ $credentials.supabaseApi.apiKey }}"
+            },
+            {
+              "name": "Authorization",
+              "value": "Bearer {{ $credentials.supabaseApi.apiKey }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "player_id_param",
+              "value": "={{ $json.player_id }}"
+            },
+            {
+              "name": "season_id_param",
+              "value": "={{ $json.season_id }}"
+            },
+            {
+              "name": "score_param",
+              "value": "={{ $json.score }}"
+            },
+            {
+              "name": "level_param",
+              "value": "={{ $json.level }}"
+            },
+            {
+              "name": "time_param",
+              "value": "={{ $json.time }}"
+            },
+            {
+              "name": "build_param",
+              "value": "={{ $json.build }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "update-leaderboard",
+      "name": "更新排行榜",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [1120, 300]
+    }
+  ],
+  "connections": {
+    "cron-trigger": {
+      "main": [
+        [
+          {
+            "node": "get-current-season",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "get-current-season": {
+      "main": [
+        [
+          {
+            "node": "check-season-exists",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "check-season-exists": {
+      "main": [
+        [
+          {
+            "node": "deactivate-current-season",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "create-new-season",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "deactivate-current-season": {
+      "main": [
+        [
+          {
+            "node": "create-new-season",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "create-new-season": {
+      "main": [
+        [
+          {
+            "node": "update-leaderboard",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "staticData": null,
+  "tags": [],
+  "triggerCount": 0,
+  "updatedAt": "2024-01-01T00:00:00.000Z",
+  "versionId": "1"
+}
