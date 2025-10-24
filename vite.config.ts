@@ -12,7 +12,12 @@ export default defineConfig({
   },
   server: {
     port: 3000,
-    host: true
+    host: true,
+    // 确保正确的 MIME 类型处理
+    middlewareMode: false,
+    fs: {
+      strict: false
+    }
   },
   build: {
     target: 'es2015',

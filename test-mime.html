@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MIME 类型测试</title>
+</head>
+<body>
+    <h1>MIME 类型测试</h1>
+    <div id="result"></div>
+    
+    <script>
+        // 测试 main.ts 的 MIME 类型
+        fetch('/src/main.ts')
+            .then(response => {
+                const mimeType = response.headers.get('content-type');
+                document.getElementById('result').innerHTML = `
+                    <p>main.ts 的 MIME 类型: <strong>${mimeType}</strong></p>
+                    <p>状态码: ${response.status}</p>
+                    <p>${mimeType === 'application/javascript' || mimeType === 'text/javascript' ? 
+                        '✅ MIME 类型正确' : '❌ MIME 类型错误'}</p>
+                `;
+            })
+            .catch(error => {
+                document.getElementById('result').innerHTML = `
+                    <p>❌ 请求失败: ${error.message}</p>
+                `;
+            });
+    </script>
+</body>
+</html>

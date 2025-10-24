@@ -1,0 +1,23 @@
+# 确保正确的 MIME 类型
+AddType application/javascript .js
+AddType application/javascript .mjs
+AddType text/javascript .js
+AddType text/javascript .mjs
+AddType application/wasm .wasm
+
+# 处理 TypeScript 文件（开发环境）
+AddType application/javascript .ts
+AddType text/javascript .ts
+
+# 处理 Vue 文件
+AddType text/html .vue
+
+# 启用 CORS（如果需要）
+Header always set Access-Control-Allow-Origin "*"
+Header always set Access-Control-Allow-Methods "GET, POST, PUT, DELETE, OPTIONS"
+Header always set Access-Control-Allow-Headers "Content-Type, Authorization"
+
+# 处理预检请求
+RewriteEngine On
+RewriteCond %{REQUEST_METHOD} OPTIONS
+RewriteRule ^(.*)$ $1 [R=200,L]

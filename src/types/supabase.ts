@@ -62,7 +62,7 @@ export interface Database {
           season_id: string
           level: number
           score: number
-          play_time: number
+          time: number
           build: string[]
           created_at: string
         }
@@ -72,7 +72,7 @@ export interface Database {
           season_id: string
           level: number
           score: number
-          play_time: number
+          time: number
           build: string[]
           created_at?: string
         }
@@ -82,7 +82,7 @@ export interface Database {
           season_id?: string
           level?: number
           score?: number
-          play_time?: number
+          time?: number
           build?: string[]
           created_at?: string
         }
@@ -95,7 +95,7 @@ export interface Database {
           rank: number
           score: number
           level: number
-          play_time: number
+          time: number
           build: string[]
           created_at: string
           updated_at: string
@@ -107,7 +107,7 @@ export interface Database {
           rank: number
           score: number
           level: number
-          play_time: number
+          time: number
           build: string[]
           created_at?: string
           updated_at?: string
@@ -119,7 +119,7 @@ export interface Database {
           rank?: number
           score?: number
           level?: number
-          play_time?: number
+          time?: number
           build?: string[]
           created_at?: string
           updated_at?: string
@@ -140,7 +140,7 @@ export interface Database {
           player_name: string
           score: number
           level: number
-          play_time: number
+          time: number
           build: string[]
           rank: number
         }[]
@@ -151,7 +151,7 @@ export interface Database {
           season_id: string
           score: number
           level: number
-          play_time: number
+          time: number
           build: string[]
         }
         Returns: number

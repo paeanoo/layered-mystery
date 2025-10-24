@@ -1,0 +1,93 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Supabase 连接测试</title>
+    <style>
+        body {
+            font-family: 'Microsoft YaHei', sans-serif;
+            margin: 20px;
+            background: #1a1a1a;
+            color: #ffffff;
+        }
+        .test-result {
+            margin: 10px 0;
+            padding: 10px;
+            border-radius: 5px;
+        }
+        .success { background: #2d5a2d; }
+        .error { background: #5a2d2d; }
+        .info { background: #2d4a5a; }
+    </style>
+</head>
+<body>
+    <h1>Supabase 连接测试</h1>
+    <div id="results"></div>
+    
+    <script type="module">
+        import { supabase, auth, gameData } from '/src/stores/supabase.ts';
+        
+        const resultsDiv = document.getElementById('results');
+        
+        function addResult(message, type = 'info') {
+            const div = document.createElement('div');
+            div.className = `test-result ${type}`;
+            div.textContent = message;
+            resultsDiv.appendChild(div);
+        }
+        
+        async function testSupabaseConnection() {
+            addResult('开始测试 Supabase 连接...', 'info');
+            
+            // 测试 1: 检查 Supabase 客户端是否创建
+            if (!supabase) {
+                addResult('❌ Supabase 客户端未创建 - 请检查环境变量配置', 'error');
+                return;
+            }
+            addResult('✅ Supabase 客户端创建成功', 'success');
+            
+            // 测试 2: 测试匿名登录
+            try {
+                const user = await auth.getCurrentUser();
+                if (user) {
+                    addResult(`✅ 当前用户: ${user.id}`, 'success');
+                } else {
+                    addResult('ℹ️ 未登录用户，尝试匿名登录...', 'info');
+                    const authResult = await auth.signInAnonymously();
+                    if (authResult) {
+                        addResult('✅ 匿名登录成功', 'success');
+                    }
+                }
+            } catch (error) {
+                addResult(`❌ 认证测试失败: ${error.message}`, 'error');
+            }
+            
+            // 测试 3: 测试获取当前赛季
+            try {
+                const season = await gameData.getCurrentSeason();
+                if (season) {
+                    addResult(`✅ 获取当前赛季成功: ${season.name}`, 'success');
+                } else {
+                    addResult('ℹ️ 未找到活跃赛季', 'info');
+                }
+            } catch (error) {
+                addResult(`❌ 获取赛季失败: ${error.message}`, 'error');
+            }
+            
+            // 测试 4: 测试获取排行榜
+            try {
+                const leaderboard = await gameData.getLeaderboard('test-season-id', 10);
+                addResult(`✅ 获取排行榜成功，返回 ${leaderboard.length} 条记录`, 'success');
+            } catch (error) {
+                addResult(`❌ 获取排行榜失败: ${error.message}`, 'error');
+            }
+            
+            addResult('测试完成！', 'info');
+        }
+        
+        // 运行测试
+        testSupabaseConnection();
+    </script>
+</body>
+</html>

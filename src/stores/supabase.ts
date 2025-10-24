@@ -6,11 +6,20 @@ const supabaseUrl = import.meta.env.VITE_SUPABASE_URL || 'https://your-project.s
 const supabaseKey = import.meta.env.VITE_SUPABASE_ANON_KEY || 'your-anon-key'
 
 // 检查配置是否有效
-const isSupabaseConfigured = supabaseUrl !== 'https://your-project.supabase.co' && supabaseKey !== 'your-anon-key'
+const isSupabaseConfigured = supabaseUrl !== 'https://your-project.supabase.co' && 
+                            supabaseKey !== 'your-anon-key' &&
+                            supabaseUrl.includes('supabase.co')
 
 export const supabase = isSupabaseConfigured 
   ? createClient<Database>(supabaseUrl, supabaseKey)
   : null
+
+// 添加配置检查日志
+if (!isSupabaseConfigured) {
+  console.warn('Supabase未正确配置，将使用离线模式')
+  console.log('Supabase URL:', supabaseUrl)
+  console.log('Supabase Key:', supabaseKey ? '已设置' : '未设置')
+}
 
 // 认证相关方法
 export const auth = {
