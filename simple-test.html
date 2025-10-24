@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>简单测试</title>
+    <style>
+        body {
+            font-family: 'Microsoft YaHei', sans-serif;
+            margin: 20px;
+            background: #1a1a1a;
+            color: #ffffff;
+        }
+        .status {
+            padding: 20px;
+            margin: 10px 0;
+            border-radius: 5px;
+            background: #2d5a2d;
+        }
+    </style>
+</head>
+<body>
+    <h1>简单测试页面</h1>
+    <div class="status">
+        <h2>✅ 页面加载成功！</h2>
+        <p>如果您能看到这个页面，说明基本的 HTML 服务是正常的。</p>
+        <p>现在让我们测试 JavaScript 模块加载...</p>
+    </div>
+    
+    <div id="js-test"></div>
+    
+    <script>
+        // 测试基本的 JavaScript 功能
+        document.getElementById('js-test').innerHTML = 
+            '<div class="status"><h3>✅ JavaScript 执行成功！</h3><p>基本的 JavaScript 功能正常。</p></div>';
+        
+        // 测试模块加载
+        console.log('开始测试模块加载...');
+        
+        // 尝试动态导入 main.ts
+        import('/src/main.ts')
+            .then(() => {
+                console.log('✅ main.ts 模块加载成功！');
+                document.getElementById('js-test').innerHTML += 
+                    '<div class="status"><h3>✅ 模块加载成功！</h3><p>main.ts 模块已成功加载。</p></div>';
+            })
+            .catch(error => {
+                console.error('❌ 模块加载失败:', error);
+                document.getElementById('js-test').innerHTML += 
+                    '<div style="background: #5a2d2d; padding: 20px; margin: 10px 0; border-radius: 5px;">' +
+                    '<h3>❌ 模块加载失败</h3><p>错误: ' + error.message + '</p></div>';
+            });
+    </script>
+</body>
+</html>

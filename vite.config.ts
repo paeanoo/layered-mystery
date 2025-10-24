@@ -3,7 +3,20 @@ import vue from '@vitejs/plugin-vue'
 import { resolve } from 'path'
 
 export default defineConfig({
-  plugins: [vue()],
+  plugins: [
+    vue(),
+    {
+      name: 'fix-mime-types',
+      configureServer(server) {
+        server.middlewares.use('/src', (req, res, next) => {
+          if (req.url?.endsWith('.ts') || req.url?.endsWith('.js')) {
+            res.setHeader('Content-Type', 'application/javascript');
+          }
+          next();
+        });
+      }
+    }
+  ],
   base: './', // 使用相对路径，解决部署路径问题
   resolve: {
     alias: {
@@ -17,10 +30,6 @@ export default defineConfig({
     middlewareMode: false,
     fs: {
       strict: false
-    },
-    // 添加明确的 MIME 类型配置
-    headers: {
-      'Content-Type': 'application/javascript'
     }
   },
   build: {
