@@ -2,21 +2,37 @@ import { createClient } from '@supabase/supabase-js'
 import type { Database } from '../types/supabase'
 
 // Supabase 配置
-const supabaseUrl = import.meta.env.VITE_SUPABASE_URL || 'https://your-project.supabase.co'
-const supabaseKey = import.meta.env.VITE_SUPABASE_ANON_KEY || 'your-anon-key'
+const supabaseUrl = import.meta.env.VITE_SUPABASE_URL || 'https://jrumbdycdgenmjtjdkis.supabase.co'
+const supabaseKey = import.meta.env.VITE_SUPABASE_ANON_KEY || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImpydW1iZHljZGdlbm1qdGpka2lzIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjExMDI1NjIsImV4cCI6MjA3NjY3ODU2Mn0.1wGEVzLdG656KL5X_AulzWVMNCuuLSXf_2svDDg9jBY'
 
 // 检查配置是否有效
-const isSupabaseConfigured = supabaseUrl !== 'https://your-project.supabase.co' && 
-                            supabaseKey !== 'your-anon-key' &&
-                            supabaseUrl.includes('supabase.co')
+const isSupabaseConfigured = supabaseUrl.includes('jrumbdycdgenmjtjdkis.supabase.co') && 
+                            supabaseKey.length > 100
 
 export const supabase = isSupabaseConfigured 
   ? createClient<Database>(supabaseUrl, supabaseKey)
   : null
 
-// 添加配置检查日志
-if (!isSupabaseConfigured) {
-  console.warn('Supabase未正确配置，将使用离线模式')
+// 配置检查日志
+if (isSupabaseConfigured) {
+  console.log('✅ Supabase已正确配置')
+  console.log('Supabase URL:', supabaseUrl)
+  console.log('Supabase Key:', '已设置 (' + supabaseKey.length + ' 字符)')
+  
+  // 测试连接
+  if (supabase) {
+    supabase.from('seasons').select('count').then(({ data, error }) => {
+      if (error) {
+        console.log('⚠️ Supabase连接测试失败:', error.message)
+      } else {
+        console.log('✅ Supabase连接测试成功')
+      }
+    }).catch(err => {
+      console.log('⚠️ Supabase连接测试异常:', err.message)
+    })
+  }
+} else {
+  console.warn('❌ Supabase未正确配置，将使用离线模式')
   console.log('Supabase URL:', supabaseUrl)
   console.log('Supabase Key:', supabaseKey ? '已设置' : '未设置')
 }

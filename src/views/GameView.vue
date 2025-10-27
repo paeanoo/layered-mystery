@@ -7,16 +7,27 @@
       @click="handleCanvasClick"
     ></canvas>
 
-    <!-- 被动属性选择界面 -->
+    <!-- 被动属性选择界面（用于30秒选择属性和死亡后） -->
     <PassiveSelectionModal
-      :visible="showPassiveSelection"
+      :visible="showPassiveSelection || gameStore.gameState.isGameOver"
       :level="gameStore.gameState.level"
+      :score="gameStore.gameState.score"
       :available-passives="gameStore.availablePassives"
       :selected-passive="gameStore.selectedPassive"
       :player-passives="gameStore.gameState.player.passiveAttributes"
+      :show-actions="gameStore.gameState.isGameOver"
       @close="onPassiveModalClose"
       @select="selectPassive"
       @confirm="confirmSelection"
+      @restart="restartGame"
+      @exit="exitGame"
+    />
+
+    <!-- 暂停时的角色属性详情界面 -->
+    <CharacterDetailsModal
+      :visible="gameStore.gameState.isPaused && !showPassiveSelection && !gameStore.gameState.isGameOver"
+      :player-stats="characterStats"
+      @close="togglePause"
     />
 
     <!-- 游戏控制按钮 -->
@@ -25,62 +36,6 @@
         {{ gameStore.gameState.isPaused ? '继续' : '暂停' }}
       </button>
       <button class="btn btn-small" @click="exitGame">退出</button>
-    </div>
-
-    <!-- 游戏结束界面 -->
-    <div v-if="gameStore.gameState.isGameOver" class="game-over-overlay">
-      <div class="game-over-modal">
-        <div class="game-over-header">
-          <h2>游戏结束</h2>
-          <div class="death-icon">💀</div>
-        </div>
-        
-        <div class="final-stats">
-          <div class="current-stats">
-            <h3>本次游戏</h3>
-            <div class="stat-row">
-              <span class="stat-label">层数</span>
-              <span class="stat-value current">{{ gameStore.gameState.level }}</span>
-            </div>
-            <div class="stat-row">
-              <span class="stat-label">分数</span>
-              <span class="stat-value current">{{ gameStore.gameState.score.toLocaleString() }}</span>
-            </div>
-            <div class="stat-row">
-              <span class="stat-label">存活时间</span>
-              <span class="stat-value current">{{ formatTime(gameStore.gameState.timeRemaining) }}</span>
-            </div>
-          </div>
-          
-          <div class="best-stats">
-            <h3>历史最佳</h3>
-            <div class="stat-row">
-              <span class="stat-label">最高层数</span>
-              <span class="stat-value best">{{ gameStore.highestLevel.toLocaleString() }}</span>
-            </div>
-            <div class="stat-row">
-              <span class="stat-label">最高分数</span>
-              <span class="stat-value best">{{ gameStore.highestScore.toLocaleString() }}</span>
-            </div>
-            <div class="stat-row">
-              <span class="stat-label">最长存活</span>
-              <span class="stat-value best">{{ formatTime(gameStore.longestSurvival) }}</span>
-            </div>
-          </div>
-        </div>
-        
-        <div class="achievement-section" v-if="hasNewRecord">
-          <div class="new-record-banner">
-            <span class="trophy">🏆</span>
-            <span class="record-text">新记录！</span>
-          </div>
-        </div>
-        
-        <div class="game-over-actions">
-          <button class="btn btn-primary" @click="restartGame">重新开始</button>
-          <button class="btn btn-secondary" @click="exitGame">返回主页</button>
-        </div>
-      </div>
     </div>
   </div>
 </template>
@@ -92,6 +47,7 @@ import { useGameStore } from '../stores/game'
 import { TestGameEngine } from '../game/core/TestGameEngine'
 import { PASSIVE_ATTRIBUTES } from '../types/game'
 import PassiveSelectionModal from '../game/ui/PassiveSelectionModal.vue'
+import CharacterDetailsModal from '../game/ui/CharacterDetailsModal.vue'
 
 const router = useRouter()
 const gameStore = useGameStore()
@@ -101,13 +57,43 @@ let gameEngine: TestGameEngine | null = null
 let gameLoopId: number | null = null
 
 const showPassiveSelection = computed(() => {
+  // 如果死亡，直接显示界面
+  if (gameStore.gameState.isGameOver) {
+    return true
+  }
+  // 否则检查是否有可用的被动属性
   return gameStore.availablePassives.length > 0 && !gameStore.selectedPassive
 })
+
 
 // 检查是否有新记录
 const hasNewRecord = computed(() => {
   return gameStore.gameState.level > gameStore.highestLevel || 
          gameStore.gameState.score > gameStore.highestScore
+})
+
+// 角色统计数据
+const characterStats = computed(() => {
+  const player = gameStore.gameState.player
+  return {
+    level: gameStore.gameState.level,
+    score: gameStore.gameState.score,
+    timeRemaining: gameStore.gameState.timeRemaining,
+    enemiesDefeated: gameStore.gameState.enemiesDefeated || 0,
+    currentEnemies: gameStore.gameState.enemies?.length || 0,
+    projectileCount: gameStore.gameState.projectiles?.length || 0,
+    damage: player.damage,
+    attackSpeed: player.attackSpeed,
+    critRate: (player.critChance || 0) * 100,
+    moveSpeed: player.moveSpeed,
+    critDamage: (player.critChance || 0) * 100 * 2,
+    enemyMoveSpeed: 1, // 默认敌人移动速度
+    lifesteal: (player.lifesteal || 0) * 100,
+    healthRegen: player.regeneration || 0,
+    pierce: player.pierce || 0,
+    currentHealth: player.health,
+    maxHealth: player.maxHealth
+  }
 })
 
 // 游戏循环
@@ -124,15 +110,13 @@ const startGameLoop = () => {
 
 // 更新游戏状态
 const updateGameState = () => {
-  // 更新剩余时间
-  if (gameStore.gameState.timeRemaining > 0) {
-    const newTime = gameStore.gameState.timeRemaining - 0.016
-    gameStore.updateTimeRemaining(Math.max(0, newTime))
-  } else {
-    // 时间结束，触发被动属性选择
-    if (gameStore.availablePassives.length === 0) {
-      gameStore.generatePassiveOptions()
-    }
+  // 时间更新由TestGameEngine处理，这里不再重复处理
+  // 只同步游戏状态到store
+  if (gameEngine) {
+    gameStore.gameState.timeRemaining = gameEngine.gameTime
+    gameStore.gameState.level = gameEngine.currentLevel
+    gameStore.gameState.score = gameEngine.score
+    gameStore.gameState.enemiesDefeated = Math.floor(gameEngine.score / 10)
   }
 }
 
@@ -157,6 +141,14 @@ onMounted(async () => {
 })
 
 const handleKeyDown = (event: KeyboardEvent) => {
+  // 处理暂停键
+  if (event.key === 'p' || event.key === 'P' || event.key === ' ') {
+    event.preventDefault()
+    event.stopPropagation()
+    togglePause()
+    return
+  }
+  
   if (gameEngine) {
     gameEngine.handleKeyDown(event.key)
   }
@@ -183,6 +175,10 @@ const confirmSelection = () => {
     // 更新游戏引擎中的游戏状态
     if (gameEngine) {
       gameEngine.updateGameState(gameStore.gameState)
+      // 继续游戏（不是死亡的情况）
+      if (!gameStore.gameState.isGameOver) {
+        gameEngine.isPaused = false
+      }
     }
   }
 }
@@ -194,14 +190,31 @@ const onPassiveModalClose = () => {
 
 // 处理关卡完成事件
 const handleLevelComplete = () => {
-  console.log('关卡完成，触发被动属性选择')
-  gameStore.nextLevel()
+  if (gameStore.gameState.isGameOver) {
+    console.log('游戏结束，触发死亡界面')
+    // 游戏结束，不需要额外处理，死亡界面会自动显示
+  } else {
+    console.log('时间到，进入下一层')
+    // 进入下一层，血量回满，分数累积
+    gameStore.nextLevel()
+    // 暂停游戏等待被动属性选择
+    gameStore.gameState.isPaused = true
+    if (gameEngine) {
+      gameEngine.isPaused = true
+    }
+  }
 }
 
 const togglePause = () => {
+  // 切换游戏状态
+  gameStore.gameState.isPaused = !gameStore.gameState.isPaused
+  
+  // 同步到游戏引擎
   if (gameEngine) {
-    gameEngine.pauseToggle()
+    gameEngine.setPaused(gameStore.gameState.isPaused)
   }
+  
+  console.log('暂停状态切换:', gameStore.gameState.isPaused)
 }
 
 const exitGame = () => {
@@ -215,9 +228,14 @@ const restartGame = async () => {
   if (gameEngine) {
     gameEngine.stop()
   }
+  
+  // 重置游戏状态
+  gameStore.gameState.isGameOver = false
+  gameStore.gameState.isPaused = false
+  
   await gameStore.startGame()
   if (gameCanvas.value) {
-    gameEngine = new GameEngine(gameCanvas.value, gameStore.gameState)
+    gameEngine = new TestGameEngine(gameCanvas.value, handleLevelComplete, gameStore.gameState)
     gameEngine.start()
   }
 }

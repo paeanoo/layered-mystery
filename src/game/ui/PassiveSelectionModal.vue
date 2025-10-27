@@ -3,11 +3,21 @@
     <div class="modal-overlay" @click="onClose"></div>
     <div class="modal-content">
       <div class="modal-header">
-        <h2>选择被动属性</h2>
-        <p class="level-info">第{{ level }}层 - 选择你的强化</p>
+        <h2>{{ showActions ? '游戏结束' : '选择被动属性' }}</h2>
+        <p class="level-info">{{ showActions ? '你已经死亡' : `第${level}层 - 选择你的强化` }}</p>
+        <div v-if="showActions" class="game-over-stats">
+          <div class="stat-box">
+            <div class="stat-label">到达层数</div>
+            <div class="stat-value">{{ level }}</div>
+          </div>
+          <div class="stat-box">
+            <div class="stat-label">最终分数</div>
+            <div class="stat-value">{{ score || 0 }}</div>
+          </div>
+        </div>
       </div>
       
-      <div class="passive-options">
+      <div class="passive-options" v-if="!showActions">
         <div 
           v-for="passive in availablePassives" 
           :key="passive.id"
@@ -29,6 +39,11 @@
         </div>
       </div>
 
+      <div class="modal-actions" v-if="showActions">
+        <button class="btn btn-primary" @click="onRestart">重新开始</button>
+        <button class="btn btn-secondary" @click="onExit">退出</button>
+      </div>
+
     </div>
   </div>
 </template>
@@ -41,15 +56,19 @@ import { PASSIVE_ATTRIBUTES } from '../../types/game'
 interface Props {
   visible: boolean
   level: number
+  score?: number
   availablePassives: PassiveAttribute[]
   selectedPassive: string | null
   playerPassives: string[]
+  showActions?: boolean // 是否显示重新开始和退出按钮
 }
 
 interface Emits {
   (e: 'close'): void
   (e: 'select', passiveId: string): void
   (e: 'confirm'): void
+  (e: 'restart'): void
+  (e: 'exit'): void
 }
 
 const props = defineProps<Props>()
@@ -59,7 +78,9 @@ const selectPassive = (passiveId: string) => {
   if (!isPassiveDisabled(passiveId)) {
     emit('select', passiveId)
     // 选择后立即确认
-    emit('confirm')
+    setTimeout(() => {
+      emit('confirm')
+    }, 100)
   }
 }
 
@@ -67,9 +88,17 @@ const onClose = () => {
   emit('close')
 }
 
+const onRestart = () => {
+  emit('restart')
+}
+
+const onExit = () => {
+  emit('exit')
+}
+
 const isPassiveDisabled = (passiveId: string): boolean => {
-  // 检查是否已经拥有该被动
-  return props.playerPassives.includes(passiveId)
+  // 允许重复选择，永远不禁用
+  return false
 }
 
 const getPassiveStats = (passiveId: string) => {
@@ -105,6 +134,16 @@ const getPassiveStats = (passiveId: string) => {
       break
     case 'lifesteal':
       stats.push({ label: '偷取', value: `+${(passive.value * 100).toFixed(0)}%` })
+      break
+    default:
+      // 对于未知的被动属性，显示默认信息
+      if (passive.type === 'multiplicative') {
+        stats.push({ label: '提升', value: `+${(passive.value * 100).toFixed(0)}%` })
+      } else if (passive.type === 'additive') {
+        stats.push({ label: '增加', value: `+${passive.value}` })
+      } else {
+        stats.push({ label: '特殊', value: passive.description })
+      }
       break
   }
 
@@ -163,6 +202,36 @@ const getPassiveStats = (passiveId: string) => {
 .level-info {
   color: var(--text-secondary);
   font-size: 1.2rem;
+}
+
+.game-over-stats {
+  display: flex;
+  justify-content: space-around;
+  margin-top: 1.5rem;
+  padding: 1rem;
+  background: var(--primary-bg);
+  border: 2px solid var(--accent-color);
+  border-radius: 12px;
+}
+
+.game-over-stats .stat-box {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.game-over-stats .stat-label {
+  color: var(--text-secondary);
+  font-size: 0.9rem;
+  font-weight: 500;
+}
+
+.game-over-stats .stat-value {
+  color: var(--accent-color);
+  font-size: 1.8rem;
+  font-weight: bold;
+  text-shadow: 0 0 10px rgba(0, 255, 136, 0.5);
 }
 
 .passive-options {
@@ -266,6 +335,45 @@ const getPassiveStats = (passiveId: string) => {
   font-weight: bold;
 }
 
+.modal-actions {
+  display: flex;
+  gap: 1rem;
+  justify-content: center;
+  margin-top: 2rem;
+  padding-top: 2rem;
+  border-top: 1px solid var(--border-color);
+}
+
+.btn {
+  padding: 0.8rem 2rem;
+  border: none;
+  border-radius: 8px;
+  font-size: 1rem;
+  font-weight: bold;
+  cursor: pointer;
+  transition: all 0.3s ease;
+}
+
+.btn-primary {
+  background: var(--accent-color);
+  color: var(--primary-bg);
+}
+
+.btn-primary:hover {
+  background: #00cc66;
+  transform: translateY(-2px);
+}
+
+.btn-secondary {
+  background: var(--border-color);
+  color: var(--text-primary);
+}
+
+.btn-secondary:hover {
+  background: var(--text-secondary);
+  transform: translateY(-2px);
+}
+
 
 @media (max-width: 768px) {
   .modal-content {
@@ -287,6 +395,15 @@ const getPassiveStats = (passiveId: string) => {
   
   .passive-icon {
     font-size: 2.5rem;
+  }
+  
+  .game-over-stats {
+    flex-direction: column;
+    gap: 1rem;
+  }
+  
+  .game-over-stats .stat-value {
+    font-size: 1.5rem;
   }
 }
 </style>

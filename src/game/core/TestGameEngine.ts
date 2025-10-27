@@ -21,6 +21,8 @@ export class TestGameEngine {
   private showPauseStats = false // 暂停时显示属性窗口
   private gameTime = 30 // 游戏时间（秒）
   private gameStartTime = 0 // 游戏开始时间
+  private pausedTime = 0 // 暂停时累计的时间
+  private lastPauseTime = 0 // 最后一次暂停的时间戳
   private keys: { [key: string]: boolean } = {} // 键盘状态跟踪
   private currentLevel = 1 // 当前层数
   private showPassiveSelection = false // 是否显示被动属性选择
@@ -28,6 +30,7 @@ export class TestGameEngine {
   private lifestealPercent = 0 // 生命偷取百分比
   private autoRegenAmount = 0 // 自动回复生命值
   private regenTimer = 0 // 回复计时器
+  private hasTriggeredLevelComplete = false // 是否已经触发关卡完成
   
   // 被动属性数据
   private passiveAttributes = [
@@ -102,6 +105,9 @@ export class TestGameEngine {
     this.score = 0
     this.gameTime = 30
     this.gameStartTime = Date.now()
+    this.pausedTime = 0
+    this.lastPauseTime = 0
+    this.hasTriggeredLevelComplete = false // 重置关卡完成标志
     this.gameLoop()
   }
 
@@ -123,6 +129,27 @@ export class TestGameEngine {
   private update() {
     // 更新时间
     this.updateGameTime()
+    
+    // 同步分数到gameState
+    if (this.gameState) {
+      this.gameState.score = this.score
+      this.gameState.level = this.currentLevel
+      this.gameState.timeRemaining = this.gameTime
+      
+      // 同步最大生命值（如果gameState中的值更新了）
+      if (this.gameState.player && this.gameState.player.maxHealth !== this.playerMaxHealth) {
+        // 计算生命值增量
+        const healthIncrease = this.gameState.player.maxHealth - this.playerMaxHealth
+        this.playerMaxHealth = this.gameState.player.maxHealth
+        this.playerHealth += healthIncrease
+      }
+      
+      // 同步生命值到gameState
+      if (this.gameState.player) {
+        this.gameState.player.health = this.playerHealth
+        this.gameState.player.maxHealth = this.playerMaxHealth
+      }
+    }
     
     // 处理玩家移动
     this.updatePlayerMovement()
@@ -151,8 +178,8 @@ export class TestGameEngine {
         this.playerHealth -= 0.5
         if (this.playerHealth <= 0) {
           this.playerHealth = 0
-          // 重置游戏
-          this.resetGame()
+          // 触发游戏结束
+          this.triggerGameOver()
         }
       }
     })
@@ -210,17 +237,15 @@ export class TestGameEngine {
           // 造成伤害
           enemy.health -= projectile.damage
           
-          // 生命偷取
-          if (this.lifestealPercent > 0) {
-            const healAmount = Math.floor(projectile.damage * this.lifestealPercent / 100)
+          // 生命偷取（从gameState获取）
+          const lifestealPercent = this.gameState?.player?.lifesteal || 0
+          if (lifestealPercent > 0) {
+            const healAmount = Math.floor(projectile.damage * lifestealPercent)
             this.playerHealth = Math.min(this.playerMaxHealth, this.playerHealth + healAmount)
           }
           
-          // 穿透机制：如果投射物还有穿透次数，继续飞行
+          // 穿透机制：增加已穿透次数
           projectile.pierce++
-          if (projectile.pierce > projectile.maxPierce) {
-            this.projectiles.splice(index, 1)
-          }
           
           // 添加击中特效
           this.addHitEffect(enemy.x, enemy.y, projectile.isCrit)
@@ -231,6 +256,12 @@ export class TestGameEngine {
             this.score += 10
             // 添加死亡特效
             this.addDeathEffect(enemy.x, enemy.y)
+          }
+          
+          // 如果穿透次数超过最大穿透次数，移除投射物
+          if (projectile.pierce > projectile.maxPierce) {
+            // 使用标记而不是直接splice，避免修改正在遍历的数组
+            projectile.life = 0
           }
         }
       })
@@ -249,10 +280,13 @@ export class TestGameEngine {
   private handleAutoAttack() {
     // 获取玩家攻击速度属性
     const player = this.gameState?.player || { attackSpeed: 1 }
-    const actualCooldown = Math.max(50, this.attackCooldown / player.attackSpeed)
+    // attackSpeed是每秒攻击次数，转换为每帧所需的攻击间隔
+    const attacksPerSecond = player.attackSpeed
+    const attacksPerFrame = attacksPerSecond / 60 // 假设60fps
+    const framesPerAttack = Math.max(1, Math.floor(1 / attacksPerFrame))
     
     this.attackTimer++
-    if (this.attackTimer >= actualCooldown && this.enemies.length > 0) {
+    if (this.attackTimer >= framesPerAttack && this.enemies.length > 0) {
       this.attackTimer = 0
       this.shootProjectile()
     }
@@ -519,7 +553,7 @@ export class TestGameEngine {
     this.ctx.fillText('分数: ' + this.getScore(), 120, 25)
     
     // 显示时间
-    this.ctx.fillText('时间: ' + this.gameTime, 220, 25)
+    this.ctx.fillText('时间: ' + Math.ceil(this.gameTime), 220, 25)
     
     // 显示暂停状态
     if (this.isPaused) {
@@ -636,6 +670,24 @@ export class TestGameEngine {
     this.spawnEnemy()
   }
 
+  private triggerGameOver() {
+    // 暂停游戏
+    this.isPaused = true
+    
+    // 设置游戏状态为结束
+    if (this.gameState) {
+      this.gameState.isGameOver = true
+      this.gameState.isPaused = true
+    }
+    
+    // 通知Vue组件游戏结束
+    if (this.onLevelComplete) {
+      this.onLevelComplete()
+    }
+    
+    console.log('游戏结束，触发死亡界面')
+  }
+
   // 处理键盘输入（特殊按键）
   handleKeyDown(key: string) {
     switch (key.toLowerCase()) {
@@ -651,6 +703,23 @@ export class TestGameEngine {
     this.showPauseStats = this.isPaused // 暂停时显示属性窗口
     console.log('游戏', this.isPaused ? '暂停' : '继续')
   }
+  
+  // 设置暂停状态
+  setPaused(paused: boolean) {
+    if (paused && !this.isPaused) {
+      // 开始暂停，记录暂停时间
+      this.lastPauseTime = Date.now()
+    } else if (!paused && this.isPaused) {
+      // 结束暂停，累计暂停时间
+      if (this.lastPauseTime > 0) {
+        this.pausedTime += Date.now() - this.lastPauseTime
+        this.lastPauseTime = 0
+      }
+    }
+    this.isPaused = paused
+    this.showPauseStats = paused
+    console.log('游戏状态设置为:', paused ? '暂停' : '继续')
+  }
 
   // 切换属性显示
   toggleStats() {
@@ -660,18 +729,22 @@ export class TestGameEngine {
   // 更新游戏时间
   private updateGameTime() {
     const currentTime = Date.now()
-    const elapsedSeconds = Math.floor((currentTime - this.gameStartTime) / 1000)
-    this.gameTime = Math.max(0, 30 - elapsedSeconds)
+    // 扣除暂停时间
+    const actualElapsedSeconds = (currentTime - this.gameStartTime - this.pausedTime) / 1000
+    this.gameTime = Math.max(0, 30 - actualElapsedSeconds)
     
-    // 时间到0时进入下一层
-    if (this.gameTime <= 0) {
+    // 时间到0时进入下一层，但只触发一次
+    if (this.gameTime <= 0 && !this.hasTriggeredLevelComplete) {
+      this.hasTriggeredLevelComplete = true
       this.nextLevel()
     }
   }
 
   // 更新玩家移动
   private updatePlayerMovement() {
-    const moveSpeed = 8 // 每帧移动距离
+    // 从gameState获取移动速度
+    const baseMoveSpeed = 8
+    const moveSpeed = this.gameState?.player?.moveSpeed ? baseMoveSpeed * this.gameState.player.moveSpeed : baseMoveSpeed
     
     if (this.keys['w'] || this.keys['arrowup']) {
       this.playerY -= moveSpeed
@@ -699,9 +772,10 @@ export class TestGameEngine {
     if (this.regenTimer >= 60) {
       this.regenTimer = 0
       
-      // 自动回复
-      if (this.autoRegenAmount > 0) {
-        this.playerHealth = Math.min(this.playerMaxHealth, this.playerHealth + this.autoRegenAmount)
+      // 从gameState获取生命回复量
+      const regenAmount = this.gameState?.player?.regeneration || 0
+      if (regenAmount > 0) {
+        this.playerHealth = Math.min(this.playerMaxHealth, this.playerHealth + regenAmount)
       }
     }
   }
@@ -709,6 +783,19 @@ export class TestGameEngine {
   // 进入下一层
   private nextLevel() {
     this.currentLevel++
+    // 血量回满
+    this.playerHealth = this.playerMaxHealth
+    // 角色回到初始位置
+    this.playerX = this.canvas.width / 2
+    this.playerY = this.canvas.height / 2
+    // 清空所有敌人、投射物和特效
+    this.enemies = []
+    this.projectiles = []
+    this.effects = []
+    // 重新生成敌人
+    this.spawnEnemy()
+    // 重置计时器
+    this.enemySpawnTimer = 0
     // 通知Vue组件系统处理被动属性选择
     if (this.onLevelComplete) {
       this.onLevelComplete()
@@ -716,7 +803,10 @@ export class TestGameEngine {
     // 重置时间但保持游戏状态
     this.gameTime = 30
     this.gameStartTime = Date.now()
-    console.log('进入第', this.currentLevel, '层')
+    this.pausedTime = 0
+    this.lastPauseTime = 0
+    this.hasTriggeredLevelComplete = false // 重置关卡完成标志
+    console.log('进入第', this.currentLevel, '层，血量回满，位置重置')
   }
 
   // 生成被动属性选项
@@ -1069,7 +1159,7 @@ export class TestGameEngine {
     yOffset += lineHeight
     this.drawStatItem(leftColumn, yOffset, '当前分数', `${this.score}`, '#ffffff')
     yOffset += lineHeight
-    this.drawStatItem(leftColumn, yOffset, '剩余时间', `${this.gameTime}秒`, '#ffff00')
+    this.drawStatItem(leftColumn, yOffset, '剩余时间', `${Math.ceil(this.gameTime)}秒`, '#ffff00')
     yOffset += lineHeight
     this.drawStatItem(leftColumn, yOffset, '击败敌人', `${Math.floor(this.score/10)}`, '#ffffff')
     yOffset += lineHeight

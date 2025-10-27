@@ -174,6 +174,8 @@ export const useGameStore = defineStore('game', () => {
     
     // 更新最高记录
     updateHighestRecords()
+    
+    console.log('游戏结束，当前分数:', gameState.value.score, '当前层数:', gameState.value.level)
   }
 
   // 更新最高记录
@@ -272,7 +274,7 @@ export const useGameStore = defineStore('game', () => {
 
   const selectPassive = (passiveId: string) => {
     selectedPassive.value = passiveId
-    applyPassiveAttribute(passiveId)
+    console.log('选择被动属性:', passiveId)
   }
 
   const applyPassiveAttribute = (passiveId: string) => {
@@ -317,22 +319,56 @@ export const useGameStore = defineStore('game', () => {
 
   // 进入下一层
   const nextLevel = () => {
+    // 进入下一层
     gameState.value.level++
+    
+    // 血量回满
+    gameState.value.player.health = gameState.value.player.maxHealth
+    
+    // 重置时间
     gameState.value.timeRemaining = 30
+    
+    // 清空敌人和投射物
     gameState.value.enemies = []
     gameState.value.projectiles = []
     
     // 生成新的被动选择
     generatePassiveOptions()
     selectedPassive.value = null
+    
+    console.log('进入第', gameState.value.level, '层，血量回满，分数累积')
   }
 
   // 确认被动选择
   const confirmPassiveSelection = () => {
     if (selectedPassive.value) {
+      console.log('确认选择被动属性:', selectedPassive.value)
+      console.log('选择前的玩家属性:', {
+        attackSpeed: gameState.value.player.attackSpeed,
+        damage: gameState.value.player.damage,
+        critChance: gameState.value.player.critChance,
+        projectiles: gameState.value.player.projectiles,
+        pierce: gameState.value.player.pierce,
+        maxHealth: gameState.value.player.maxHealth,
+        lifesteal: gameState.value.player.lifesteal
+      })
       applyPassiveAttribute(selectedPassive.value)
+      console.log('选择后的玩家属性:', {
+        attackSpeed: gameState.value.player.attackSpeed,
+        damage: gameState.value.player.damage,
+        critChance: gameState.value.player.critChance,
+        projectiles: gameState.value.player.projectiles,
+        pierce: gameState.value.player.pierce,
+        maxHealth: gameState.value.player.maxHealth,
+        lifesteal: gameState.value.player.lifesteal
+      })
       selectedPassive.value = null
       availablePassives.value = []
+      // 继续游戏（如果不是死亡）
+      if (!gameState.value.isGameOver) {
+        gameState.value.isPaused = false
+      }
+      console.log('被动属性应用完成')
     }
   }
 
@@ -384,9 +420,7 @@ export const useGameStore = defineStore('game', () => {
   // 更新剩余时间
   const updateTimeRemaining = (time: number) => {
     gameState.value.timeRemaining = time
-    if (time <= 0) {
-      nextLevel()
-    }
+    // 时间到0时的处理由TestGameEngine负责，这里不再重复处理
   }
 
   return {
