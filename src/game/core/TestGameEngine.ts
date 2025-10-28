@@ -7,7 +7,7 @@ export class TestGameEngine {
   private playerX = 100
   private playerY = 100
   private playerAngle = 0
-  private enemies: Array<{ x: number; y: number; size: number; color: string; health: number; maxHealth: number }> = []
+  private enemies: Array<{ x: number; y: number; size: number; color: string; health: number; maxHealth: number; type?: string; icdUntil?: number }> = []
   private projectiles: Array<{ x: number; y: number; vx: number; vy: number; damage: number; isCrit: boolean; life: number; pierce: number; maxPierce: number }> = []
   private effects: Array<{ x: number; y: number; type: string; life: number; size: number }> = []
   private enemySpawnTimer = 0
@@ -16,9 +16,9 @@ export class TestGameEngine {
   private score = 0
   private playerHealth = 100
   private playerMaxHealth = 100
+  private playerIFrameUntil = 0 // 玩家无敌帧结束时间戳（毫秒）
+  private playerDamageHistory: Array<{ time: number; damage: number }> = [] // 伤害堆叠窗口历史
   private isPaused = false
-  private showStats = false
-  private showPauseStats = false // 暂停时显示属性窗口
   private gameTime = 30 // 游戏时间（秒）
   private gameStartTime = 0 // 游戏开始时间
   private pausedTime = 0 // 暂停时累计的时间
@@ -47,6 +47,27 @@ export class TestGameEngine {
     { id: 'multi_shot', name: '多重射击', description: '每次攻击发射2个投射物' }
   ]
 
+  // 接触伤害配置
+  // ICD (Internal Cooldown) - 单体冷却时间（毫秒）
+  private readonly ENEMY_ICD: Record<string, number> = {
+    'grunt': 750,    // 步兵
+    'runner': 600,   // 疾跑
+    'shooter': 800,  // 投射
+    'shield': 800,   // 护盾
+    'shielded': 800, // 护盾（别名）
+    'brute': 900,    // 肉盾
+    'exploder': 0,   // 爆裂（只有爆炸伤害，不吃接触循环）
+  }
+
+  // 接触伤害倍数
+  private readonly ENEMY_DMG_MULTIPLIER: Record<string, number> = {
+    'grunt': 1.0,    // 默认
+    'runner': 1.05,  // ×1.05
+    'shooter': 0.9,  // ×0.9（顶身）
+    'brute': 1.25,   // ×1.25
+    'boss': 1.6,     // ×1.6
+  }
+
   constructor(canvas: HTMLCanvasElement, onLevelComplete?: () => void, gameState?: any) {
     this.canvas = canvas
     this.ctx = canvas.getContext('2d')!
@@ -55,6 +76,114 @@ export class TestGameEngine {
     this.setupCanvas()
     this.setupEventListeners()
     this.spawnEnemy()
+  }
+
+  // 计算无敌帧时长（根据层数）
+  private calculateIFrameDuration(layer: number): number {
+    // 11层起线性降到0.28s（20层）
+    // 第11层: 0.40s, 第20层: 0.28s
+    if (layer < 11) {
+      return 400 // 0.40s
+    } else if (layer >= 20) {
+      return 280 // 0.28s
+    } else {
+      // 线性插值: 11层 -> 400ms, 20层 -> 280ms
+      const t = (layer - 11) / (20 - 11)
+      return 400 - (400 - 280) * t
+    }
+  }
+
+  // 计算接触伤害
+  private calculateContactDamage(layer: number, enemyType?: string): number {
+    // 基础伤害: 6 + (层-1) × 0.7（11层后改 × 1.0）
+    const baseDamage = 6 + (layer - 1) * (layer < 11 ? 0.7 : 1.0)
+    
+    // 敌人类型伤害倍数
+    const multiplier = enemyType ? (this.ENEMY_DMG_MULTIPLIER[enemyType] || 1.0) : 1.0
+    
+    return baseDamage * multiplier
+  }
+
+  // 检查是否超过堆叠上限
+  private exceedsStackCap(damage: number): boolean {
+    const now = Date.now()
+    const windowEnd = now
+    const windowStart = windowEnd - 1200 // 1.2s窗口
+    
+    // 计算窗口内的伤害次数和总伤害
+    let hitCount = 0
+    let totalDamage = 0
+    
+    this.playerDamageHistory.forEach(({ time, damage: dmg }) => {
+      if (time >= windowStart && time <= windowEnd) {
+        hitCount++
+        totalDamage += dmg
+      }
+    })
+    
+    // 移除过期记录
+    this.playerDamageHistory = this.playerDamageHistory.filter(d => d.time >= windowStart)
+    
+    // 堆叠上限：最多3次或≤最大生命55%，取更小者
+    const maxHits = 3
+    const maxDamage = this.playerMaxHealth * 0.55
+    
+    // 检查是否会超过次数上限
+    if (hitCount >= maxHits) return true
+    
+    // 检查是否会超过伤害上限
+    if (totalDamage + damage > maxDamage) return true
+    
+    return false
+  }
+
+  // 处理接触伤害
+  private handleContactDamage(enemy: { type?: string; icdUntil?: number }, layer: number) {
+    const now = Date.now()
+    const enemyType = enemy.type || 'grunt'
+    const enemyICD = this.ENEMY_ICD[enemyType] || 750
+    
+    // 跳过 exploder（只有爆炸伤害，不吃接触循环）
+    if (enemyType === 'exploder') return
+    
+    // 检查玩家无敌帧
+    if (now < this.playerIFrameUntil) {
+      return
+    }
+    
+    // 检查敌人ICD
+    if (enemy.icdUntil && now < enemy.icdUntil) {
+      return
+    }
+    
+    // 计算伤害
+    const damage = this.calculateContactDamage(layer, enemyType)
+    
+    // 检查堆叠上限
+    if (this.exceedsStackCap(damage)) {
+      return
+    }
+    
+    // 结算伤害
+    this.playerHealth -= damage
+    if (this.playerHealth <= 0) {
+      this.playerHealth = 0
+      this.triggerGameOver()
+      return
+    }
+    
+    // 应用无敌帧
+    const iFrameDuration = this.calculateIFrameDuration(layer)
+    this.playerIFrameUntil = now + iFrameDuration
+    
+    // 应用敌人ICD
+    enemy.icdUntil = now + enemyICD
+    
+    // 记录伤害历史
+    this.playerDamageHistory.push({ time: now, damage })
+    
+    // 添加受击特效
+    this.addHitEffect(this.playerX, this.playerY, false)
   }
 
   // 更新游戏状态引用
@@ -102,6 +231,8 @@ export class TestGameEngine {
     console.log('开始游戏循环')
     // 重置玩家生命值
     this.playerHealth = this.playerMaxHealth
+    this.playerIFrameUntil = 0 // 重置无敌帧
+    this.playerDamageHistory = [] // 重置伤害历史
     this.score = 0
     this.gameTime = 30
     this.gameStartTime = Date.now()
@@ -173,14 +304,13 @@ export class TestGameEngine {
       const playerDistance = Math.sqrt(
         (enemy.x - this.playerX) ** 2 + (enemy.y - this.playerY) ** 2
       )
-      if (playerDistance < 25) {
-        // 玩家受到伤害
-        this.playerHealth -= 0.5
-        if (this.playerHealth <= 0) {
-          this.playerHealth = 0
-          // 触发游戏结束
-          this.triggerGameOver()
-        }
+      
+      // 碰撞检测（接触伤害范围：玩家半径15 + 敌人尺寸）
+      const contactDistance = 15 + (enemy.size || 20)
+      
+      if (playerDistance < contactDistance) {
+        // 使用新的间断结算系统
+        this.handleContactDamage(enemy, this.currentLevel)
       }
     })
 
@@ -193,9 +323,19 @@ export class TestGameEngine {
     // 自动攻击
     this.handleAutoAttack()
 
-    // 生成新敌人
+    // 生成新敌人（根据层数和当前敌人数量调整生成速率）
     this.enemySpawnTimer++
-    if (this.enemySpawnTimer > 120) { // 每2秒生成一个敌人
+    
+    // 计算生成间隔：基础时间 + 敌人过多时的延迟
+    const baseSpawnInterval = 60 - (this.currentLevel - 1) * 2 // 随层数加快
+    const maxSpawnInterval = 120
+    const enemyCountPenalty = this.enemies.length * 5 // 敌人越多，生成越慢
+    const spawnInterval = Math.min(maxSpawnInterval, baseSpawnInterval + enemyCountPenalty)
+    
+    // 目标敌人数量：随层数增加
+    const targetEnemyCount = Math.min(20, 5 + this.currentLevel * 2)
+    
+    if (this.enemySpawnTimer >= spawnInterval && this.enemies.length < targetEnemyCount) {
       this.spawnEnemy()
       this.enemySpawnTimer = 0
     }
@@ -212,14 +352,169 @@ export class TestGameEngine {
       case 3: x = -20; y = Math.random() * this.canvas.height; break
     }
 
-    this.enemies.push({
-      x: x!,
-      y: y!,
-      size: 20,
-      color: '#ff4444',
-      health: 30,
-      maxHealth: 30
-    })
+    const layer = this.currentLevel
+    
+    // 根据层数生成不同类型和难度的敌人
+    const enemy = this.createEnemyByLevel(layer, x!, y!)
+    this.enemies.push(enemy)
+  }
+
+  // 根据层数创建不同难度的敌人
+  private createEnemyByLevel(layer: number, x: number, y: number) {
+    // 基础属性随层数增长
+    const healthMultiplier = 1 + (layer - 1) * 0.15
+    const baseHealth = 30 * healthMultiplier
+    const baseSize = 16 + layer * 0.5
+    
+    // 选择敌人类型（根据层数逐步解锁）
+    let enemyType = 'grunt'
+    let color = '#ff4444'
+    let size = baseSize
+    let health = baseHealth
+    
+    const roll = Math.random()
+    
+    // 精英概率：随层数增加（最多30%）
+    const eliteChance = Math.min(0.3, 0.05 + (layer - 1) * 0.015)
+    const isElite = roll < eliteChance
+    
+    if (isElite) {
+      // 精英敌人：更高的血量和伤害
+      health = baseHealth * 2.5
+      size = baseSize * 1.3
+      
+      // 精英敌人随机类型
+      const eliteTypes = ['elite_boss', 'elite_tank', 'elite_speed', 'elite_assassin']
+      enemyType = eliteTypes[Math.floor(Math.random() * eliteTypes.length)]
+      
+      // 精英敌人特殊颜色
+      switch (enemyType) {
+        case 'elite_boss':
+          color = '#ff0000' // 红色Boss
+          size = baseSize * 1.5
+          health = baseHealth * 3
+          break
+        case 'elite_tank':
+          color = '#884400' // 棕色坦克
+          size = baseSize * 1.4
+          health = baseHealth * 3.5
+          break
+        case 'elite_speed':
+          color = '#00ff00' // 绿色高速
+          size = baseSize * 1.1
+          health = baseHealth * 1.8
+          break
+        case 'elite_assassin':
+          color = '#ff00ff' // 紫色刺客
+          size = baseSize * 0.9
+          health = baseHealth * 2
+          break
+      }
+    } else {
+      // 普通敌人类型（根据层数逐步解锁）
+      let typeChance = Math.random()
+      
+      if (layer >= 12) {
+        // 12层以上：所有类型
+        if (typeChance < 0.15) enemyType = 'split' // 分裂型
+        else if (typeChance < 0.30) enemyType = 'hunter' // 追踪型
+        else if (typeChance < 0.45) enemyType = 'reflect' // 反射型
+        else if (typeChance < 0.60) enemyType = 'support' // 支援型
+        else if (typeChance < 0.75) enemyType = 'assassin' // 刺客型
+        else if (typeChance < 0.85) enemyType = 'tank' // 坦克型
+        else if (typeChance < 0.92) enemyType = 'swarm' // 群体型
+        else enemyType = 'ranged' // 远程型
+      } else if (layer >= 10) {
+        // 10层以上
+        if (typeChance < 0.20) enemyType = 'hunter'
+        else if (typeChance < 0.40) enemyType = 'reflect'
+        else if (typeChance < 0.60) enemyType = 'support'
+        else if (typeChance < 0.80) enemyType = 'assassin'
+        else enemyType = 'ranged'
+      } else if (layer >= 8) {
+        // 8层以上
+        if (typeChance < 0.15) enemyType = 'support'
+        else if (typeChance < 0.35) enemyType = 'assassin'
+        else if (typeChance < 0.55) enemyType = 'tank'
+        else if (typeChance < 0.75) enemyType = 'ranged'
+        else enemyType = 'swarm'
+      } else if (layer >= 5) {
+        // 5层以上
+        if (typeChance < 0.20) enemyType = 'tank'
+        else if (typeChance < 0.50) enemyType = 'ranged'
+        else if (typeChance < 0.75) enemyType = 'swarm'
+        else enemyType = 'runner'
+      } else if (layer >= 3) {
+        // 3层以上
+        if (typeChance < 0.30) enemyType = 'ranged'
+        else if (typeChance < 0.60) enemyType = 'runner'
+        else enemyType = 'grunt'
+      }
+      
+      // 设置普通敌人颜色和属性
+      switch (enemyType) {
+        case 'grunt':
+          color = '#ff4444'
+          health = baseHealth
+          break
+        case 'runner':
+          color = '#ff8888'
+          health = baseHealth * 0.7
+          size = baseSize * 0.8
+          break
+        case 'swarm':
+          color = '#44ff44'
+          health = baseHealth * 0.5
+          size = baseSize * 0.7
+          break
+        case 'ranged':
+          color = '#4444ff'
+          health = baseHealth * 1.2
+          size = baseSize * 0.9
+          break
+        case 'tank':
+          color = '#888888'
+          health = baseHealth * 2.5
+          size = baseSize * 1.4
+          break
+        case 'assassin':
+          color = '#ff44ff'
+          health = baseHealth * 1.1
+          size = baseSize * 0.85
+          break
+        case 'support':
+          color = '#ffff44'
+          health = baseHealth * 1.3
+          size = baseSize * 1.1
+          break
+        case 'reflect':
+          color = '#ff0044'
+          health = baseHealth * 1.8
+          size = baseSize * 1.2
+          break
+        case 'hunter':
+          color = '#44ffff'
+          health = baseHealth * 1.2
+          size = baseSize * 0.9
+          break
+        case 'split':
+          color = '#ff44ff'
+          health = baseHealth * 2.0
+          size = baseSize * 1.3
+          break
+      }
+    }
+    
+    return {
+      x,
+      y,
+      size: Math.floor(size),
+      color,
+      health: Math.floor(health),
+      maxHealth: Math.floor(health),
+      type: enemyType,
+      icdUntil: 0
+    }
   }
 
   private updateProjectiles() {
@@ -294,7 +589,7 @@ export class TestGameEngine {
 
   private shootProjectile() {
     // 找到最近的敌人
-    let nearestEnemy = null
+    let nearestEnemy: typeof this.enemies[0] | null = null
     let nearestDistance = Infinity
 
     this.enemies.forEach(enemy => {
@@ -307,52 +602,53 @@ export class TestGameEngine {
       }
     })
 
-    if (nearestEnemy) {
-      const dx = nearestEnemy.x - this.playerX
-      const dy = nearestEnemy.y - this.playerY
-      const distance = Math.sqrt(dx * dx + dy * dy)
+    if (!nearestEnemy) return
+    
+    const enemy = nearestEnemy as typeof this.enemies[0]
+    const dx = enemy.x - this.playerX
+    const dy = enemy.y - this.playerY
+    const distance = Math.sqrt(dx * dx + dy * dy)
 
-      if (distance > 0) {
-        const speed = 12 // 提高投射物速度
-        const vx = (dx / distance) * speed
-        const vy = (dy / distance) * speed
+    if (distance > 0) {
+      const speed = 12 // 提高投射物速度
+      const vx = (dx / distance) * speed
+      const vy = (dy / distance) * speed
 
-        // 获取玩家属性
-        const player = this.gameState?.player || {
-          damage: 20,
-          critChance: 0.2,
-          projectiles: 1,
-          pierce: 0
-        }
+      // 获取玩家属性
+      const player = this.gameState?.player || {
+        damage: 20,
+        critChance: 0.2,
+        projectiles: 1,
+        pierce: 0
+      }
 
-        // 计算暴击和伤害（使用游戏状态管理中的属性）
-        const isCrit = Math.random() < player.critChance
-        const damage = isCrit ? player.damage * 2 : player.damage
+      // 计算暴击和伤害（使用游戏状态管理中的属性）
+      const isCrit = Math.random() < player.critChance
+      const damage = isCrit ? player.damage * 2 : player.damage
 
-        // 创建多个投射物（如果玩家有投射物加成）
-        for (let i = 0; i < player.projectiles; i++) {
-          // 为多个投射物添加角度偏移
-          const angleOffset = i > 0 ? (i - 1) * 0.3 - 0.3 : 0
-          const adjustedVx = vx * Math.cos(angleOffset) - vy * Math.sin(angleOffset)
-          const adjustedVy = vx * Math.sin(angleOffset) + vy * Math.cos(angleOffset)
+      // 创建多个投射物（如果玩家有投射物加成）
+      for (let i = 0; i < player.projectiles; i++) {
+        // 为多个投射物添加角度偏移，使用对称分布
+        const angleOffset = (i - (player.projectiles - 1) / 2) * 0.15
+        const adjustedVx = vx * Math.cos(angleOffset) - vy * Math.sin(angleOffset)
+        const adjustedVy = vx * Math.sin(angleOffset) + vy * Math.cos(angleOffset)
 
-          this.projectiles.push({
-            x: this.playerX,
-            y: this.playerY,
-            vx: adjustedVx,
-            vy: adjustedVy,
-            damage,
-            isCrit,
-            life: 60, // 投射物生命周期
-            pierce: 0, // 当前穿透次数
-            maxPierce: player.pierce // 最大穿透次数
-          })
-        }
-
-        // 更新玩家朝向
-        this.playerAngle = Math.atan2(dy, dx);
+        this.projectiles.push({
+          x: this.playerX,
+          y: this.playerY,
+          vx: adjustedVx,
+          vy: adjustedVy,
+          damage,
+          isCrit,
+          life: 60, // 投射物生命周期
+          pierce: 0, // 当前穿透次数
+          maxPierce: player.pierce // 最大穿透次数
+        })
       }
     }
+
+    // 更新玩家朝向
+    this.playerAngle = Math.atan2(dy, dx)
   }
 
   private updateEffects() {
@@ -481,34 +777,117 @@ export class TestGameEngine {
     this.ctx.restore()
   }
 
-  private drawEnemy(enemy: { x: number; y: number; size: number; color: string; health: number; maxHealth: number }) {
+  private drawEnemy(enemy: { x: number; y: number; size: number; color: string; health: number; maxHealth: number; type?: string }) {
     // 保存上下文
     this.ctx.save()
     this.ctx.translate(enemy.x, enemy.y)
 
-    // 绘制敌人身体（方形，更邪恶的外观）
-    this.ctx.fillStyle = enemy.color
-    this.ctx.fillRect(-enemy.size/2, -enemy.size/2, enemy.size, enemy.size)
+    const isElite = enemy.type && enemy.type.startsWith('elite')
+    
+    // 精英敌人：绘制光环效果
+    if (isElite) {
+      this.ctx.strokeStyle = enemy.color
+      this.ctx.lineWidth = 2
+      for (let i = 0; i < 3; i++) {
+        const radius = enemy.size / 2 + 2 + i * 2
+        this.ctx.beginPath()
+        this.ctx.arc(0, 0, radius, 0, Math.PI * 2)
+        this.ctx.stroke()
+      }
+    }
 
-    // 绘制敌人眼睛（红色小点）
-    this.ctx.fillStyle = '#ff0000'
-    this.ctx.beginPath()
-    this.ctx.arc(-enemy.size/4, -enemy.size/4, 2, 0, Math.PI * 2)
-    this.ctx.fill()
-    this.ctx.beginPath()
-    this.ctx.arc(enemy.size/4, -enemy.size/4, 2, 0, Math.PI * 2)
-    this.ctx.fill()
+    // 绘制敌人身体
+    if (enemy.type === 'tank' || isElite) {
+      // 坦克和精英：圆形，更大更坚固
+      this.ctx.fillStyle = enemy.color
+      this.ctx.beginPath()
+      this.ctx.arc(0, 0, enemy.size / 2, 0, Math.PI * 2)
+      this.ctx.fill()
+      
+      // 绘制外圈
+      this.ctx.strokeStyle = this.ctx.fillStyle
+      this.ctx.lineWidth = 2
+      this.ctx.beginPath()
+      this.ctx.arc(0, 0, enemy.size / 2, 0, Math.PI * 2)
+      this.ctx.stroke()
+    } else {
+      // 普通敌人：不同形状
+      if (enemy.type === 'runner' || enemy.type === 'hunter') {
+        // 快速型：菱形
+        this.ctx.fillStyle = enemy.color
+        this.ctx.beginPath()
+        this.ctx.moveTo(0, -enemy.size/2)
+        this.ctx.lineTo(enemy.size/2, 0)
+        this.ctx.lineTo(0, enemy.size/2)
+        this.ctx.lineTo(-enemy.size/2, 0)
+        this.ctx.closePath()
+        this.ctx.fill()
+      } else if (enemy.type === 'swarm') {
+        // 群体型：小三角
+        this.ctx.fillStyle = enemy.color
+        this.ctx.beginPath()
+        this.ctx.moveTo(0, -enemy.size/2)
+        this.ctx.lineTo(enemy.size/2, enemy.size/2)
+        this.ctx.lineTo(-enemy.size/2, enemy.size/2)
+        this.ctx.closePath()
+        this.ctx.fill()
+      } else if (enemy.type === 'ranged') {
+        // 远程型：六边形
+        this.ctx.fillStyle = enemy.color
+        this.ctx.beginPath()
+        for (let i = 0; i < 6; i++) {
+          const angle = (Math.PI / 3) * i - Math.PI / 2
+          const x = Math.cos(angle) * enemy.size / 2
+          const y = Math.sin(angle) * enemy.size / 2
+          if (i === 0) this.ctx.moveTo(x, y)
+          else this.ctx.lineTo(x, y)
+        }
+        this.ctx.closePath()
+        this.ctx.fill()
+      } else {
+        // 默认：方形
+        this.ctx.fillStyle = enemy.color
+        this.ctx.fillRect(-enemy.size/2, -enemy.size/2, enemy.size, enemy.size)
+      }
+    }
 
-    // 绘制生命值条
-    const barWidth = enemy.size
+    // 绘制敌人眼睛
+    if (enemy.type !== 'swarm') { // 群体型太小时不画眼睛
+      this.ctx.fillStyle = '#ff0000'
+      this.ctx.beginPath()
+      this.ctx.arc(-enemy.size/4, -enemy.size/4, 2, 0, Math.PI * 2)
+      this.ctx.fill()
+      this.ctx.beginPath()
+      this.ctx.arc(enemy.size/4, -enemy.size/4, 2, 0, Math.PI * 2)
+      this.ctx.fill()
+    }
+
+    // 绘制生命值条（增强版）
+    const barWidth = enemy.size * 1.2
     const barHeight = 4
     const healthPercent = enemy.health / enemy.maxHealth
 
-    this.ctx.fillStyle = '#ff4444'
-    this.ctx.fillRect(-barWidth/2, -enemy.size/2 - 8, barWidth, barHeight)
+    // 背景
+    this.ctx.fillStyle = '#330000'
+    this.ctx.fillRect(-barWidth/2, -enemy.size/2 - 10, barWidth, barHeight)
+    
+    // 血量
+    if (healthPercent > 0.5) {
+      this.ctx.fillStyle = '#00ff00'
+    } else if (healthPercent > 0.25) {
+      this.ctx.fillStyle = '#ffff00'
+    } else {
+      this.ctx.fillStyle = '#ff0000'
+    }
+    this.ctx.fillRect(-barWidth/2, -enemy.size/2 - 10, barWidth * healthPercent, barHeight)
 
-    this.ctx.fillStyle = '#ffaa00'
-    this.ctx.fillRect(-barWidth/2, -enemy.size/2 - 8, barWidth * healthPercent, barHeight)
+    // 精英标记
+    if (isElite) {
+      this.ctx.font = 'bold 10px Arial'
+      this.ctx.fillStyle = '#ffff00'
+      this.ctx.textAlign = 'center'
+      this.ctx.fillText('★', 0, -enemy.size/2 - 15)
+    }
 
     this.ctx.restore()
   }
@@ -565,17 +944,7 @@ export class TestGameEngine {
     // 绘制生命值条
     this.drawHealthBar()
     
-    // 绘制属性面板
-    if (this.showStats) {
-      this.drawStatsPanel()
-    }
-    
     // 被动属性选择界面现在由Vue组件系统处理，不再在Canvas中绘制
-    
-    // 绘制暂停属性窗口
-    if (this.showPauseStats) {
-      this.drawPauseStatsWindow()
-    }
   }
 
   private drawHealthBar() {
@@ -605,54 +974,6 @@ export class TestGameEngine {
     return this.score
   }
 
-  private drawStatsPanel() {
-    const panelX = this.canvas.width - 250
-    const panelY = 50
-    const panelWidth = 230
-    const panelHeight = 300
-
-    // 绘制面板背景
-    this.ctx.fillStyle = 'rgba(0, 0, 0, 0.8)'
-    this.ctx.fillRect(panelX, panelY, panelWidth, panelHeight)
-
-    // 绘制面板边框
-    this.ctx.strokeStyle = '#00ff88'
-    this.ctx.lineWidth = 2
-    this.ctx.strokeRect(panelX, panelY, panelWidth, panelHeight)
-
-    // 绘制标题
-    this.ctx.fillStyle = '#00ff88'
-    this.ctx.font = 'bold 20px Arial'
-    this.ctx.fillText('角色属性', panelX + 10, panelY + 25)
-
-    // 绘制属性信息
-    this.ctx.fillStyle = '#ffffff'
-    this.ctx.font = '16px Arial'
-    let yOffset = 50
-
-    const stats = [
-      `生命值: ${Math.ceil(this.playerHealth)}/${this.playerMaxHealth}`,
-      `攻击力: 20`,
-      `攻击速度: ${(1000/this.attackCooldown).toFixed(1)}/秒`,
-      `暴击率: 20%`,
-      `移动速度: 8像素/帧`,
-      `当前分数: ${this.score}`,
-      `击败敌人: ${Math.floor(this.score/10)}`,
-      `投射物数量: ${this.projectiles.length}`,
-      `敌人数量: ${this.enemies.length}`,
-      `特效数量: ${this.effects.length}`
-    ]
-
-    stats.forEach(stat => {
-      this.ctx.fillText(stat, panelX + 10, panelY + yOffset)
-      yOffset += 20
-    })
-
-    // 绘制操作提示
-    this.ctx.fillStyle = '#ffff00'
-    this.ctx.font = '14px Arial'
-    this.ctx.fillText('按Tab键关闭属性面板', panelX + 10, panelY + panelHeight - 20)
-  }
 
   private resetGame() {
     // 重置玩家状态
@@ -692,7 +1013,6 @@ export class TestGameEngine {
   handleKeyDown(key: string) {
     switch (key.toLowerCase()) {
       case 'p': case ' ': this.togglePause(); break
-      case 'tab': this.toggleStats(); break
       // 被动属性选择现在由Vue组件系统处理，不再使用键盘数字键
     }
   }
@@ -700,7 +1020,6 @@ export class TestGameEngine {
   // 暂停/继续游戏
   togglePause() {
     this.isPaused = !this.isPaused
-    this.showPauseStats = this.isPaused // 暂停时显示属性窗口
     console.log('游戏', this.isPaused ? '暂停' : '继续')
   }
   
@@ -717,14 +1036,9 @@ export class TestGameEngine {
       }
     }
     this.isPaused = paused
-    this.showPauseStats = paused
     console.log('游戏状态设置为:', paused ? '暂停' : '继续')
   }
 
-  // 切换属性显示
-  toggleStats() {
-    this.showStats = !this.showStats
-  }
 
   // 更新游戏时间
   private updateGameTime() {
@@ -743,7 +1057,7 @@ export class TestGameEngine {
   // 更新玩家移动
   private updatePlayerMovement() {
     // 从gameState获取移动速度
-    const baseMoveSpeed = 8
+    const baseMoveSpeed = 3.5 // 从8降低到3.5，减少40%以增加策略性
     const moveSpeed = this.gameState?.player?.moveSpeed ? baseMoveSpeed * this.gameState.player.moveSpeed : baseMoveSpeed
     
     if (this.keys['w'] || this.keys['arrowup']) {
@@ -1105,150 +1419,6 @@ export class TestGameEngine {
     this.ctx.restore()
   }
 
-  // 绘制暂停属性窗口
-  private drawPauseStatsWindow() {
-    const centerX = this.canvas.width / 2
-    const centerY = this.canvas.height / 2
-    const windowWidth = 700
-    const windowHeight = 600
-    
-    // 绘制半透明背景覆盖层
-    this.ctx.fillStyle = 'rgba(0, 0, 0, 0.85)'
-    this.ctx.fillRect(0, 0, this.canvas.width, this.canvas.height)
-    
-    // 绘制窗口阴影
-    this.ctx.fillStyle = 'rgba(0, 0, 0, 0.3)'
-    this.ctx.fillRect(centerX - windowWidth/2 + 8, centerY - windowHeight/2 + 8, windowWidth, windowHeight)
-    
-    // 绘制窗口背景
-    this.ctx.fillStyle = 'rgba(15, 15, 15, 0.98)'
-    this.ctx.fillRect(centerX - windowWidth/2, centerY - windowHeight/2, windowWidth, windowHeight)
-    
-    // 绘制窗口边框（渐变效果）
-    const gradient = this.ctx.createLinearGradient(centerX - windowWidth/2, centerY - windowHeight/2, centerX + windowWidth/2, centerY + windowHeight/2)
-    gradient.addColorStop(0, '#00ff88')
-    gradient.addColorStop(0.5, '#00cc66')
-    gradient.addColorStop(1, '#00ff88')
-    this.ctx.strokeStyle = gradient
-    this.ctx.lineWidth = 4
-    this.ctx.strokeRect(centerX - windowWidth/2, centerY - windowHeight/2, windowWidth, windowHeight)
-    
-    // 绘制内边框
-    this.ctx.strokeStyle = 'rgba(0, 255, 136, 0.3)'
-    this.ctx.lineWidth = 1
-    this.ctx.strokeRect(centerX - windowWidth/2 + 4, centerY - windowHeight/2 + 4, windowWidth - 8, windowHeight - 8)
-    
-    // 绘制标题背景
-    this.ctx.fillStyle = 'rgba(0, 255, 136, 0.1)'
-    this.ctx.fillRect(centerX - windowWidth/2 + 10, centerY - windowHeight/2 + 10, windowWidth - 20, 50)
-    
-    // 绘制标题
-    this.ctx.fillStyle = '#00ff88'
-    this.ctx.font = 'bold 32px Arial'
-    this.ctx.textAlign = 'center'
-    this.ctx.fillText('角色属性详情', centerX, centerY - 220)
-    
-    // 绘制属性信息 - 使用更好的布局避免重叠
-    let yOffset = centerY - 160
-    const leftColumn = centerX - 280
-    const rightColumn = centerX + 20
-    const lineHeight = 32 // 增加行高避免重叠
-    
-    // 左列属性（游戏状态）
-    this.drawStatItem(leftColumn, yOffset, '当前层数', `${this.currentLevel}`, '#00ff88')
-    yOffset += lineHeight
-    this.drawStatItem(leftColumn, yOffset, '当前分数', `${this.score}`, '#ffffff')
-    yOffset += lineHeight
-    this.drawStatItem(leftColumn, yOffset, '剩余时间', `${Math.ceil(this.gameTime)}秒`, '#ffff00')
-    yOffset += lineHeight
-    this.drawStatItem(leftColumn, yOffset, '击败敌人', `${Math.floor(this.score/10)}`, '#ffffff')
-    yOffset += lineHeight
-    this.drawStatItem(leftColumn, yOffset, '当前敌人数量', `${this.enemies.length}`, '#ff4444')
-    yOffset += lineHeight
-    this.drawStatItem(leftColumn, yOffset, '投射物数量', `${this.projectiles.length}`, '#4488ff')
-    
-    // 右列属性（角色属性）
-    yOffset = centerY - 160
-    this.drawStatItem(rightColumn, yOffset, '伤害', '20', '#ff4444')
-    yOffset += lineHeight
-    this.drawStatItem(rightColumn, yOffset, '攻击速度', `${(1000/this.attackCooldown).toFixed(1)}/秒`, '#ff8800')
-    yOffset += lineHeight
-    this.drawStatItem(rightColumn, yOffset, '暴击率', '20%', '#ffff00')
-    yOffset += lineHeight
-    this.drawStatItem(rightColumn, yOffset, '移动速度', '8像素/帧', '#00ff88')
-    yOffset += lineHeight
-    this.drawStatItem(rightColumn, yOffset, '暴击伤害', '40', '#ff8800')
-    yOffset += lineHeight
-    this.drawStatItem(rightColumn, yOffset, '敌人移动速度', '1像素/帧', '#ff4444')
-    yOffset += lineHeight
-    this.drawStatItem(rightColumn, yOffset, '生命偷取', `${this.lifestealPercent}%`, '#ff4444')
-    yOffset += lineHeight
-    this.drawStatItem(rightColumn, yOffset, '生命回复', `${this.autoRegenAmount}/秒`, '#4488ff')
-    
-    // 绘制生命值条背景
-    this.ctx.fillStyle = 'rgba(50, 50, 50, 0.8)'
-    this.ctx.fillRect(centerX - 200, centerY + 100, 400, 30)
-    
-    // 绘制生命值条
-    const healthPercent = Math.max(0, this.playerHealth / this.playerMaxHealth)
-    if (healthPercent > 0) {
-      // 渐变生命值条
-      const healthGradient = this.ctx.createLinearGradient(centerX - 200, centerY + 100, centerX + 200, centerY + 100)
-      if (healthPercent > 0.6) {
-        healthGradient.addColorStop(0, '#00ff88')
-        healthGradient.addColorStop(1, '#00cc66')
-      } else if (healthPercent > 0.3) {
-        healthGradient.addColorStop(0, '#ffaa00')
-        healthGradient.addColorStop(1, '#ff8800')
-      } else {
-        healthGradient.addColorStop(0, '#ff4444')
-        healthGradient.addColorStop(1, '#cc2222')
-      }
-      this.ctx.fillStyle = healthGradient
-      this.ctx.fillRect(centerX - 200, centerY + 100, 400 * healthPercent, 30)
-    }
-    
-    // 绘制生命值条边框
-    this.ctx.strokeStyle = '#00ff88'
-    this.ctx.lineWidth = 2
-    this.ctx.strokeRect(centerX - 200, centerY + 100, 400, 30)
-    
-    // 绘制生命值条文字
-    this.ctx.fillStyle = '#ffffff'
-    this.ctx.font = 'bold 16px Arial'
-    this.ctx.textAlign = 'center'
-    this.ctx.fillText(`生命值: ${Math.ceil(this.playerHealth)}/${this.playerMaxHealth} (${Math.round(healthPercent*100)}%)`, centerX, centerY + 120)
-    
-    // 绘制底部提示
-    this.ctx.fillStyle = '#ffff00'
-    this.ctx.font = 'bold 18px Arial'
-    this.ctx.fillText('按P键或空格键继续游戏', centerX, centerY + 160)
-    
-    this.ctx.textAlign = 'left'
-  }
-
-  // 绘制属性项
-  private drawStatItem(x: number, y: number, label: string, value: string, valueColor: string) {
-    // 绘制标签
-    this.ctx.fillStyle = '#cccccc'
-    this.ctx.font = '16px Arial'
-    this.ctx.textAlign = 'left'
-    this.ctx.fillText(label + ':', x, y)
-    
-    // 绘制数值
-    this.ctx.fillStyle = valueColor
-    this.ctx.font = 'bold 16px Arial'
-    this.ctx.textAlign = 'right'
-    this.ctx.fillText(value, x + 250, y) // 增加数值位置避免重叠
-    
-    // 绘制分隔线
-    this.ctx.strokeStyle = 'rgba(0, 255, 136, 0.2)'
-    this.ctx.lineWidth = 1
-    this.ctx.beginPath()
-    this.ctx.moveTo(x, y + 8)
-    this.ctx.lineTo(x + 250, y + 8) // 调整分隔线长度
-    this.ctx.stroke()
-  }
 
   // 公共方法：暂停/继续游戏
   public pauseToggle() {

@@ -26,7 +26,7 @@
     <!-- 暂停时的角色属性详情界面 -->
     <CharacterDetailsModal
       :visible="gameStore.gameState.isPaused && !showPassiveSelection && !gameStore.gameState.isGameOver"
-      :player-stats="characterStats"
+      :player-stats="gameStore.playerStats"
       @close="togglePause"
     />
 
@@ -70,30 +70,6 @@ const showPassiveSelection = computed(() => {
 const hasNewRecord = computed(() => {
   return gameStore.gameState.level > gameStore.highestLevel || 
          gameStore.gameState.score > gameStore.highestScore
-})
-
-// 角色统计数据
-const characterStats = computed(() => {
-  const player = gameStore.gameState.player
-  return {
-    level: gameStore.gameState.level,
-    score: gameStore.gameState.score,
-    timeRemaining: gameStore.gameState.timeRemaining,
-    enemiesDefeated: gameStore.gameState.enemiesDefeated || 0,
-    currentEnemies: gameStore.gameState.enemies?.length || 0,
-    projectileCount: gameStore.gameState.projectiles?.length || 0,
-    damage: player.damage,
-    attackSpeed: player.attackSpeed,
-    critRate: (player.critChance || 0) * 100,
-    moveSpeed: player.moveSpeed,
-    critDamage: (player.critChance || 0) * 100 * 2,
-    enemyMoveSpeed: 1, // 默认敌人移动速度
-    lifesteal: (player.lifesteal || 0) * 100,
-    healthRegen: player.regeneration || 0,
-    pierce: player.pierce || 0,
-    currentHealth: player.health,
-    maxHealth: player.maxHealth
-  }
 })
 
 // 游戏循环

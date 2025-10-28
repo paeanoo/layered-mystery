@@ -91,7 +91,7 @@
     </div>
 
     <!-- 被动属性详情弹窗 -->
-    <div v-if="showPassiveDetails" class="passive-details-overlay" @click="hidePassiveDetails">
+    <div v-if="showPassiveDetailsModal" class="passive-details-overlay" @click="hidePassiveDetails">
       <div class="passive-details-modal" @click.stop>
         <h3>{{ getPassiveName(selectedPassiveId) }}</h3>
         <p>{{ getPassiveDescription(selectedPassiveId) }}</p>
@@ -134,7 +134,7 @@ interface Emits {
 const props = defineProps<Props>()
 const emit = defineEmits<Emits>()
 
-const showPassiveDetails = ref(false)
+const showPassiveDetailsModal = ref(false)
 const selectedPassiveId = ref('')
 
 const healthPercent = computed(() => 
@@ -207,11 +207,11 @@ const getPassiveEffects = (passiveId: string) => {
 
 const showPassiveDetails = (passiveId: string) => {
   selectedPassiveId.value = passiveId
-  showPassiveDetails.value = true
+  showPassiveDetailsModal.value = true
 }
 
 const hidePassiveDetails = () => {
-  showPassiveDetails.value = false
+  showPassiveDetailsModal.value = false
   selectedPassiveId.value = ''
 }
 

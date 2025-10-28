@@ -1,5 +1,5 @@
 <template>
-  <div v-if="visible" class="character-details-overlay" @click="handleOverlayClick">
+  <div v-if="visible" class="character-details-overlay">
     <div class="character-details-modal" @click.stop>
       <!-- 标题 -->
       <div class="modal-header">
@@ -24,7 +24,7 @@
           </div>
           <div class="stat-item">
             <span class="stat-label">投射物数量</span>
-            <span class="stat-value projectiles">{{ playerStats.projectileCount }}</span>
+            <span class="stat-value projectiles">{{ playerStats.projectiles }}</span>
           </div>
           <div class="stat-item">
             <span class="stat-label">穿透次数</span>
@@ -32,11 +32,11 @@
           </div>
           <div class="stat-item">
             <span class="stat-label">生命偷取</span>
-            <span class="stat-value lifesteal">{{ playerStats.lifesteal }}%</span>
+            <span class="stat-value lifesteal">{{ Math.round(playerStats.lifesteal * 100) }}%</span>
           </div>
           <div class="stat-item">
             <span class="stat-label">生命回复</span>
-            <span class="stat-value regen">{{ playerStats.healthRegen }}/秒</span>
+            <span class="stat-value regen">{{ playerStats.regeneration }}/秒</span>
           </div>
           
           
@@ -46,27 +46,27 @@
         <div class="stats-column right-column">
           <div class="stat-item">
             <span class="stat-label">伤害</span>
-            <span class="stat-value damage">{{ playerStats.damage }}</span>
+            <span class="stat-value damage">{{ Math.round(playerStats.damage / 10 * 100) }}%</span>
           </div>
           <div class="stat-item">
             <span class="stat-label">攻击速度</span>
-            <span class="stat-value attack-speed">{{ playerStats.attackSpeed.toFixed(1) }}/秒</span>
+            <span class="stat-value attack-speed">{{ Math.round(playerStats.attackSpeed * 100) }}%</span>
           </div>
           <div class="stat-item">
             <span class="stat-label">暴击率</span>
-            <span class="stat-value crit-rate">{{ playerStats.critRate }}%</span>
+            <span class="stat-value crit-rate">{{ Math.round(playerStats.critChance * 100) }}%</span>
           </div>
           <div class="stat-item">
             <span class="stat-label">移动速度</span>
-            <span class="stat-value move-speed">{{ playerStats.moveSpeed }}像素/帧</span>
+            <span class="stat-value move-speed">{{ Math.round(playerStats.moveSpeed * 100) }}%</span>
           </div>
           <div class="stat-item">
             <span class="stat-label">暴击伤害</span>
-            <span class="stat-value crit-damage">{{ playerStats.critDamage }}</span>
+            <span class="stat-value crit-damage">{{ Math.round(playerStats.critDamage * 100) }}%</span>
           </div>
           <div class="stat-item">
             <span class="stat-label">敌人移动速度</span>
-            <span class="stat-value enemy-speed">{{ playerStats.enemyMoveSpeed }}像素/帧</span>
+            <span class="stat-value enemy-speed">{{ Math.round(playerStats.enemyMoveSpeed * 100) }}%</span>
           </div>
           <div class="stat-item">
             <span class="stat-label">最大生命值</span>
@@ -89,7 +89,6 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted } from 'vue'
 
 interface PlayerStats {
   level: number
@@ -97,17 +96,17 @@ interface PlayerStats {
   timeRemaining: number
   enemiesDefeated: number
   currentEnemies: number
-  projectileCount: number
+  projectiles: number
   damage: number
   attackSpeed: number
-  critRate: number
+  critChance: number
   moveSpeed: number
   critDamage: number
   enemyMoveSpeed: number
   lifesteal: number
-  healthRegen: number
+  regeneration: number
   pierce: number
-  currentHealth: number
+  health: number
   maxHealth: number
 }
 
@@ -118,28 +117,12 @@ interface Props {
 
 const props = defineProps<Props>()
 
-const emit = defineEmits<{
-  close: []
-}>()
-
-// 计算生命值百分比
-const healthPercentage = computed(() => {
-  return Math.round((props.playerStats.currentHealth / props.playerStats.maxHealth) * 100)
-})
-
 // 格式化时间显示
 const formatTime = (seconds: number) => {
   const mins = Math.floor(seconds / 60)
   const secs = Math.floor(seconds % 60)
   return `${mins}:${secs.toString().padStart(2, '0')}`
 }
-
-// 处理点击事件
-const handleOverlayClick = () => {
-  emit('close')
-}
-
-// 键盘事件现在由父组件GameView统一处理
 </script>
 
 <style scoped>
@@ -323,84 +306,11 @@ const handleOverlayClick = () => {
   color: #fff;
 }
 
-.stat-value.current-health {
-  background: linear-gradient(135deg, #32cd32, #228b22);
-  color: #000;
-}
-
-/* 生命值进度条 */
-.health-section {
-  margin-bottom: 2rem;
-  display: flex;
-  justify-content: center;
-}
-
-.health-bar {
-  position: relative;
-  width: 500px;
-  height: 30px;
-  background: rgba(255, 68, 68, 0.3);
-  border: 2px solid #ff4444;
-  border-radius: 15px;
-  overflow: hidden;
-  box-shadow: 
-    inset 0 2px 4px rgba(0, 0, 0, 0.3),
-    0 0 15px rgba(255, 68, 68, 0.2);
-}
-
-.health-fill {
-  height: 100%;
-  background: linear-gradient(90deg, #ff4444 0%, #ff6b6b 50%, #00ff88 100%);
-  transition: width 0.8s ease;
-  border-radius: 15px;
-  position: relative;
-}
-
-.health-fill::after {
-  content: '';
-  position: absolute;
-  top: 0;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  background: linear-gradient(90deg, transparent 0%, rgba(255, 255, 255, 0.3) 50%, transparent 100%);
-  animation: shimmer 2s infinite;
-}
-
-@keyframes shimmer {
-  0% { transform: translateX(-100%); }
-  100% { transform: translateX(100%); }
-}
-
-.health-text {
-  position: absolute;
-  top: 50%;
-  left: 50%;
-  transform: translate(-50%, -50%);
-  color: #ffffff;
-  font-weight: bold;
-  font-size: 1rem;
-  text-shadow: 
-    1px 1px 3px rgba(0, 0, 0, 0.9),
-    0 0 10px rgba(255, 255, 255, 0.3);
-  z-index: 2;
-}
-
 /* 底部提示 */
 .modal-footer {
   text-align: center;
   padding-top: 1rem;
   border-top: 1px solid rgba(255, 255, 255, 0.1);
-}
-
-.continue-text {
-  color: #ffaa00;
-  font-size: 1rem;
-  margin: 0;
-  opacity: 0.9;
-  text-shadow: 0 0 10px rgba(255, 170, 0, 0.5);
-  font-weight: 500;
-  letter-spacing: 1px;
 }
 
 /* 响应式设计 */

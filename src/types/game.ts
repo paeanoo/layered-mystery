@@ -262,6 +262,7 @@ export interface GameState {
   isGameOver: boolean
   score: number
   seasonSeed: string
+  enemiesDefeated?: number
 }
 
 // 关卡配置

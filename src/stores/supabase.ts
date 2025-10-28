@@ -27,8 +27,6 @@ if (isSupabaseConfigured) {
       } else {
         console.log('✅ Supabase连接测试成功')
       }
-    }).catch(err => {
-      console.log('⚠️ Supabase连接测试异常:', err.message)
     })
   }
 } else {
@@ -81,7 +79,7 @@ export const gameData = {
   async getLeaderboard(seasonId: string, limit = 100) {
     if (!supabase) return []
     const { data, error } = await supabase
-      .rpc('get_leaderboard', { season_id: seasonId, limit })
+      .rpc('get_leaderboard', { season_id: seasonId, limit } as any)
     
     if (error) throw error
     return data
@@ -108,7 +106,7 @@ export const gameData = {
         score: result.score,
         time: result.time,
         build: result.build
-      })
+      } as any)
       .select()
       .single()
 
@@ -123,7 +121,7 @@ export const gameData = {
         level: result.level,
         time: result.time,
         build: result.build
-      })
+      } as any)
 
     if (rankError) throw rankError
 

@@ -79,6 +79,32 @@ export const useGameStore = defineStore('game', () => {
   const playerHealthPercent = computed(() => 
     (gameState.value.player.health / gameState.value.player.maxHealth) * 100
   )
+  
+  // 角色统计数据（用于显示） - 完全使用 player 数据，保持变量名一致
+  const playerStats = computed(() => {
+    const player = gameState.value.player
+    return {
+      // 游戏状态数据
+      level: gameState.value.level,
+      score: gameState.value.score,
+      timeRemaining: gameState.value.timeRemaining,
+      enemiesDefeated: gameState.value.enemiesDefeated || 0,
+      currentEnemies: gameState.value.enemies?.length || 0,
+      // 玩家属性数据（全部来自 player）
+      projectiles: player.projectiles,
+      damage: player.damage,
+      attackSpeed: player.attackSpeed,
+      critChance: player.critChance,
+      moveSpeed: player.moveSpeed,
+      critDamage: player.critChance * 2, // 暴击伤害倍率
+      enemyMoveSpeed: 1, // 敌人移动速度（固定值）
+      lifesteal: player.lifesteal,
+      regeneration: player.regeneration,
+      pierce: player.pierce || 0,
+      health: player.health,
+      maxHealth: player.maxHealth
+    }
+  })
 
   // 游戏控制方法
   const startGame = async () => {
@@ -364,6 +390,26 @@ export const useGameStore = defineStore('game', () => {
       })
       selectedPassive.value = null
       availablePassives.value = []
+      
+      // 第九层特殊处理：自动选择第十和十一层的属性
+      if (gameState.value.level === 9) {
+        // 生成第十层的被动选择
+        generatePassiveOptions()
+        const passive10 = availablePassives.value[0] // 自动选择第一个
+        if (passive10) {
+          applyPassiveAttribute(passive10.id)
+        }
+        
+        // 生成第十一层的被动选择
+        generatePassiveOptions()
+        const passive11 = availablePassives.value[0] // 自动选择第一个
+        if (passive11) {
+          applyPassiveAttribute(passive11.id)
+        }
+        
+        availablePassives.value = []
+      }
+      
       // 继续游戏（如果不是死亡）
       if (!gameState.value.isGameOver) {
         gameState.value.isPaused = false
@@ -436,6 +482,7 @@ export const useGameStore = defineStore('game', () => {
     // 计算属性
     isGameActive,
     playerHealthPercent,
+    playerStats,
     
     // 方法
     startGame,
