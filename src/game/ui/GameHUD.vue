@@ -23,9 +23,33 @@
         <button class="btn btn-small" @click="togglePause">
           {{ isPaused ? '继续' : '暂停' }}
         </button>
+        <button class="btn btn-small btn-test" @click="showLevelSelect" style="display: none;">
+          跳转关卡
+        </button>
         <button class="btn btn-small btn-danger" @click="exitGame">
           退出
         </button>
+      </div>
+      
+      <!-- 关卡选择弹窗 -->
+      <div v-if="showLevelModal" class="level-select-overlay" @click="showLevelModal = false">
+        <div class="level-select-modal" @click.stop>
+          <h3>跳转到关卡（测试功能）</h3>
+          <div class="level-input-group">
+            <label>关卡:</label>
+            <input 
+              type="number" 
+              v-model.number="targetLevel" 
+              min="1" 
+              max="20"
+              class="level-input"
+            />
+          </div>
+          <div class="modal-actions">
+            <button class="btn btn-primary" @click="jumpToLevel">跳转</button>
+            <button class="btn btn-secondary" @click="showLevelModal = false">取消</button>
+          </div>
+        </div>
       </div>
     </div>
 
@@ -129,6 +153,7 @@ interface Props {
 interface Emits {
   (e: 'toggle-pause'): void
   (e: 'exit-game'): void
+  (e: 'jump-to-level', level: number): void
 }
 
 const props = defineProps<Props>()
@@ -136,6 +161,8 @@ const emit = defineEmits<Emits>()
 
 const showPassiveDetailsModal = ref(false)
 const selectedPassiveId = ref('')
+const showLevelModal = ref(false)
+const targetLevel = ref(1)
 
 const healthPercent = computed(() => 
   (props.currentHealth / props.maxHealth) * 100
@@ -221,6 +248,18 @@ const togglePause = () => {
 
 const exitGame = () => {
   emit('exit-game')
+}
+
+const showLevelSelect = () => {
+  targetLevel.value = props.level
+  showLevelModal.value = true
+}
+
+const jumpToLevel = () => {
+  if (targetLevel.value >= 1 && targetLevel.value <= 20) {
+    emit('jump-to-level', targetLevel.value)
+    showLevelModal.value = false
+  }
 }
 </script>
 
@@ -311,6 +350,16 @@ const exitGame = () => {
 
 .btn-danger:hover {
   background: #cc3333;
+  transform: translateY(-1px);
+}
+
+.btn-test {
+  background: #8844aa;
+  color: var(--text-primary);
+}
+
+.btn-test:hover {
+  background: #663388;
   transform: translateY(-1px);
 }
 
@@ -447,6 +496,90 @@ const exitGame = () => {
   color: var(--text-primary);
   font-size: 0.9rem;
   font-weight: bold;
+}
+
+.level-select-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.8);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 10000;
+}
+
+.level-select-modal {
+  background: var(--primary-bg);
+  border: 2px solid var(--accent-color);
+  border-radius: 12px;
+  padding: 2rem;
+  max-width: 400px;
+  width: 90%;
+}
+
+.level-select-modal h3 {
+  margin: 0 0 1.5rem 0;
+  color: var(--text-primary);
+  text-align: center;
+}
+
+.level-input-group {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  margin-bottom: 1.5rem;
+}
+
+.level-input-group label {
+  color: var(--text-primary);
+  font-size: 1.1rem;
+}
+
+.level-input {
+  flex: 1;
+  padding: 10px;
+  border: 2px solid var(--accent-color);
+  border-radius: 6px;
+  background: var(--secondary-bg);
+  color: var(--text-primary);
+  font-size: 1.1rem;
+}
+
+.modal-actions {
+  display: flex;
+  gap: 1rem;
+  justify-content: flex-end;
+}
+
+.btn-primary {
+  background: var(--accent-color);
+  color: var(--primary-bg);
+  padding: 10px 20px;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 1rem;
+}
+
+.btn-primary:hover {
+  background: #00cc6a;
+}
+
+.btn-secondary {
+  background: var(--secondary-bg);
+  color: var(--text-primary);
+  padding: 10px 20px;
+  border: 1px solid var(--accent-color);
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 1rem;
+}
+
+.btn-secondary:hover {
+  background: #333;
 }
 
 .passive-details-overlay {

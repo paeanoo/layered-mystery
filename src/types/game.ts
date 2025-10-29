@@ -93,17 +93,17 @@ export const PASSIVE_ATTRIBUTES: PassiveAttribute[] = [
   {
     id: 'regeneration',
     name: '生命回复',
-    description: '每秒回复 5 点生命值',
+    description: '每秒回复 1 点生命值',
     type: 'additive',
-    value: 5,
+    value: 1,
     icon: '💚'
   },
   {
     id: 'max_health',
     name: '最大生命',
-    description: '最大生命值 +50',
+    description: '最大生命值 +10',
     type: 'additive',
-    value: 50,
+    value: 10,
     icon: '❤️'
   },
   {

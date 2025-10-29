@@ -25,15 +25,27 @@
 
     <!-- 暂停时的角色属性详情界面 -->
     <CharacterDetailsModal
-      :visible="gameStore.gameState.isPaused && !showPassiveSelection && !gameStore.gameState.isGameOver"
+      :visible="gameStore.gameState.isPaused && !showPassiveSelection && !gameStore.gameState.isGameOver && !showCharacterAttributesModal"
       :player-stats="gameStore.playerStats"
       @close="togglePause"
+    />
+
+    <!-- 测试功能：角色属性设置弹窗 -->
+    <CharacterAttributesModal
+      :visible="showCharacterAttributesModal"
+      :player-stats="gameStore.gameState.player"
+      @close="closeCharacterAttributesModal"
+      @jump-to-level="handleJumpToLevel"
+      @apply-attributes="handleApplyAttributes"
     />
 
     <!-- 游戏控制按钮 -->
     <div class="game-controls">
       <button class="btn btn-small" @click="togglePause">
         {{ gameStore.gameState.isPaused ? '继续' : '暂停' }}
+      </button>
+      <button class="btn btn-small btn-test" @click="openTestModal" style="display: none;">
+        测试功能
       </button>
       <button class="btn btn-small" @click="exitGame">退出</button>
     </div>
@@ -48,6 +60,8 @@ import { TestGameEngine } from '../game/core/TestGameEngine'
 import { PASSIVE_ATTRIBUTES } from '../types/game'
 import PassiveSelectionModal from '../game/ui/PassiveSelectionModal.vue'
 import CharacterDetailsModal from '../game/ui/CharacterDetailsModal.vue'
+import CharacterAttributesModal from '../game/ui/CharacterAttributesModal.vue'
+import type { PlayerState } from '../types/game'
 
 const router = useRouter()
 const gameStore = useGameStore()
@@ -55,6 +69,7 @@ const gameStore = useGameStore()
 const gameCanvas = ref<HTMLCanvasElement>()
 let gameEngine: TestGameEngine | null = null
 let gameLoopId: number | null = null
+const showCharacterAttributesModal = ref(false)
 
 const showPassiveSelection = computed(() => {
   // 如果死亡，直接显示界面
@@ -181,6 +196,14 @@ const handleLevelComplete = () => {
   }
 }
 
+const openTestModal = () => {
+  // 打开测试功能时自动暂停游戏
+  if (!gameStore.gameState.isPaused) {
+    togglePause()
+  }
+  showCharacterAttributesModal.value = true
+}
+
 const togglePause = () => {
   // 切换游戏状态
   gameStore.gameState.isPaused = !gameStore.gameState.isPaused
@@ -229,6 +252,49 @@ const getPassiveName = (passiveId: string) => {
 const getPassiveIcon = (passiveId: string) => {
   const passive = PASSIVE_ATTRIBUTES.find(p => p.id === passiveId)
   return passive?.icon || '?'
+}
+
+// 关闭角色属性设置弹窗
+const closeCharacterAttributesModal = () => {
+  showCharacterAttributesModal.value = false
+}
+
+// 处理关卡跳转
+const handleJumpToLevel = (level: number) => {
+  if (level >= 1 && level <= 20 && gameEngine) {
+    // 跳转到指定关卡
+    gameEngine.currentLevel = level
+    gameStore.gameState.level = level
+    
+    // 清空当前敌人
+    gameEngine.enemies = []
+    gameEngine.projectiles = []
+    
+    // 重新生成敌人
+    for (let i = 0; i < Math.min(35, 8 + level * 3); i++) {
+      gameEngine.spawnEnemy()
+    }
+    
+    console.log(`跳转到关卡 ${level}`)
+  }
+}
+
+// 处理角色属性应用
+const handleApplyAttributes = (attributes: PlayerState) => {
+  console.log('收到属性应用请求:', attributes)
+  
+  // 更新游戏状态中的玩家属性
+  Object.assign(gameStore.gameState.player, attributes)
+  
+  console.log('游戏状态已更新:', gameStore.gameState.player)
+  
+  // 同步到游戏引擎
+  if (gameEngine) {
+    gameEngine.updateGameState(gameStore.gameState)
+    console.log('已同步到游戏引擎')
+  }
+  
+  console.log('角色属性已应用:', attributes)
 }
 
 const formatTime = (seconds: number) => {
@@ -298,6 +364,27 @@ const formatTime = (seconds: number) => {
 .btn-small {
   padding: 8px 16px;
   font-size: 0.9rem;
+  border-radius: 6px;
+  border: none;
+  cursor: pointer;
+  transition: all 0.3s ease;
+  background: var(--accent-color);
+  color: var(--primary-bg);
+}
+
+.btn-small:hover {
+  background: #00cc6a;
+  transform: translateY(-1px);
+}
+
+.btn-test {
+  background: #8844aa;
+  color: var(--text-primary);
+}
+
+.btn-test:hover {
+  background: #663388;
+  transform: translateY(-1px);
 }
 
 .player-status {

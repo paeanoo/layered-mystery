@@ -12,13 +12,13 @@ export const useGameStore = defineStore('game', () => {
     enemies: [],
     projectiles: [],
     player: {
-      health: 100,
-      maxHealth: 100,
+      health: 20,
+      maxHealth: 20,
       experience: 0,
       level: 1,
       position: { x: 400, y: 300 },
       velocity: { x: 0, y: 0 },
-      attackSpeed: 1,
+      attackSpeed: 1.43, // 攻击速度：固定700毫秒攻击间隔（1000/700 ≈ 1.43）
       damage: 10,
       critChance: 0.05,
       projectiles: 1,
@@ -133,13 +133,13 @@ export const useGameStore = defineStore('game', () => {
         enemies: [],
         projectiles: [],
         player: {
-          health: 100,
-          maxHealth: 100,
+          health: 20,
+          maxHealth: 20,
           experience: 0,
           level: 1,
           position: { x: 400, y: 300 },
           velocity: { x: 0, y: 0 },
-          attackSpeed: 1,
+          attackSpeed: 1.43, // 攻击速度：固定700毫秒攻击间隔（1000/700 ≈ 1.43）
           damage: 10,
           critChance: 0.05,
           projectiles: 1,
