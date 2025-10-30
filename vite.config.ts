@@ -17,7 +17,7 @@ export default defineConfig({
       }
     }
   ],
-  base: './', // 使用相对路径，解决部署路径问题
+  base: '/', // Vercel 部署使用根路径
   resolve: {
     alias: {
       '@': resolve(__dirname, 'src')
