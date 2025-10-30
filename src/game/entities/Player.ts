@@ -325,14 +325,13 @@ export class Player {
     }
   }
 
-  // 升级
+  // 升级（不自动增加属性，只能通过被动属性选择增加）
   levelUp() {
     this.state.level += 1
     this.state.experience = 0
-    this.state.maxHealth += 20
-    this.state.health = this.state.maxHealth
-    this.state.damage += 5
-    this.state.attackSpeed += 0.1
+    // 不再自动增加属性
+    // 属性只能通过选择被动属性来增加
+    // maxHealth、damage、attackSpeed 等属性不变
   }
 
   // 增加连击

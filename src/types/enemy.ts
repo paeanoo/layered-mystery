@@ -38,35 +38,35 @@ export interface EnemyConfig {
 export const ENEMY_CONFIG: Record<EnemyType, EnemyConfig> = {
   [EnemyType.GRUNT]: {
     hp1: 80, hpMul: [1.12, 1.16], dmg1: 6, dmgInc: [0.7, 1.0], 
-    mv: [1.0, 1.35], dp: 1.0
+    mv: [1.1, 1.45], dp: 1.0
   },
   [EnemyType.RUNNER]: {
     hp1: 56, hpMul: [1.12, 1.16], dmg1: 6, dmgInc: [0.7, 1.0], 
-    mv: [1.6, 2.1], dp: 1.2
+    mv: [1.7, 2.2], dp: 1.2
   },
   [EnemyType.SHOOTER]: {
     hp1: 72, hpMul: [1.12, 1.16], dmg1: 7, dmgInc: [0.7, 1.0], 
-    mv: [1.0, 1.4], dp: 1.4, special: { shootInterval: 1.2 }
+    mv: [1.1, 1.5], dp: 1.4, special: { shootInterval: 1.2 }
   },
   [EnemyType.SHIELDED]: {
     hp1: 88, hpMul: [1.12, 1.16], dmg1: 6, dmgInc: [0.7, 1.0], 
-    mv: [1.0, 1.4], dp: 1.6, special: { frontalDR: 0.35 }
+    mv: [1.1, 1.5], dp: 1.6, special: { frontalDR: 0.35 }
   },
   [EnemyType.BRUTE]: {
     hp1: 144, hpMul: [1.12, 1.16], dmg1: 8, dmgInc: [0.9, 1.2], 
-    mv: [0.7, 0.95], dp: 2.2
+    mv: [0.75, 1.0], dp: 2.2
   },
   [EnemyType.EXPLODER]: {
     hp1: 64, hpMul: [1.12, 1.16], dmg1: 14, dmgInc: [1.0, 1.4], 
-    mv: [1.2, 1.7], dp: 1.4, special: { boomDelay: 0.8 }
+    mv: [1.3, 1.8], dp: 1.4, special: { boomDelay: 0.8 }
   },
   [EnemyType.HEALER]: {
     hp1: 72, hpMul: [1.12, 1.16], dmg1: 0, dmgInc: [0, 0], 
-    mv: [1.0, 1.3], dp: 1.8, special: { hot: 0.8 }
+    mv: [1.1, 1.4], dp: 1.8, special: { hot: 0.8 }
   },
   [EnemyType.ELITE]: {
     hp1: 176, hpMul: [1.12, 1.16], dmg1: 8, dmgInc: [0.9, 1.3], 
-    mv: [1.1, 1.5], dp: 3.5
+    mv: [1.2, 1.6], dp: 3.5
   }
 }
 

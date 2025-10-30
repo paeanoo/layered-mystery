@@ -20,6 +20,8 @@ export class TestGameEngine {
   private playerX = 100
   private playerY = 100
   private playerAngle = 0
+  private playerLastX = 100
+  private playerLastY = 100
   private enemies: Array<{
     x: number
     y: number
@@ -51,6 +53,11 @@ export class TestGameEngine {
   private levelStartTime = 0 // 当前层开始时间
   private enemyUpdateIndex = 0 // 敌人更新索引，用于分批更新
   private attackCooldown = 100 // 攻击间隔（毫秒）- 进一步提高攻击速度
+  // 快速虫分拨生成控制
+  private bugWaveCount = 0 // 当前波次已生成的快速虫数量
+  private bugWaveSize = 3 // 每波快速虫数量
+  private bugWaveCooldown = 0 // 快速虫生成冷却时间（毫秒）
+  private bugWaveCooldownDuration = 8000 // 快速虫波次间隔（8秒）
   private score = 0
   private playerHealth = 20
   private playerMaxHealth = 20
@@ -387,6 +394,9 @@ export class TestGameEngine {
     this.projectiles = []
     this.effects = []
     this.enemySpawnTimer = 0 // 重置敌人生成计时器
+    // 重置快速虫波次控制
+    this.bugWaveCount = 0
+    this.bugWaveCooldown = 0
     
     // 播放背景音乐
     // 注意：如果没有通过 loadBackgroundMusic 加载音频文件，会使用程序化生成简单的背景音乐
@@ -495,6 +505,14 @@ export class TestGameEngine {
     // 自动攻击
     this.handleAutoAttack()
 
+    // 更新快速虫波次冷却
+    if (this.bugWaveCooldown > 0) {
+      this.bugWaveCooldown -= deltaTime
+      if (this.bugWaveCooldown < 0) {
+        this.bugWaveCooldown = 0
+      }
+    }
+
     // 生成新敌人（持续生成，生成频率随层数和时间逐渐递增，无数量上限）
     this.enemySpawnTimer++
     
@@ -502,59 +520,32 @@ export class TestGameEngine {
     const currentTime = Date.now()
     const levelElapsedTime = this.levelStartTime > 0 ? (currentTime - this.levelStartTime - this.pausedTime) / 1000 : 0
     
-    // **平衡优化**：平滑递增的生成速度曲线
-    // 从第1层开始就较快，然后平滑递增，后期增速放缓
-    let baseInterval: number
+    // **优化**：一层开始时生成很慢，在一层内逐渐递增生成速度
+    // 基础间隔随层数设定（这决定了该层的最大速度）
+    let maxSpeedInterval: number // 该层能达到的最快间隔（30秒时的间隔）
     if (this.currentLevel <= 5) {
-      // 前5层：80帧 → 70帧（约1.3秒 → 1.2秒），加快初始速度
-      baseInterval = 80 - (this.currentLevel - 1) * 2.5
+      maxSpeedInterval = 50 // 前5层最快约0.83秒
     } else if (this.currentLevel <= 10) {
-      // 第6-10层：从70帧到58帧（约1.2秒 → 1.0秒），平滑过渡
-      baseInterval = 70 - (this.currentLevel - 5) * 2.4 // 70, 67.6, 65.2, 62.8, 60.4, 58
-      baseInterval = Math.max(58, baseInterval)
+      maxSpeedInterval = 40 // 第6-10层最快约0.67秒
     } else if (this.currentLevel <= 15) {
-      // 第11-15层：从58帧到48帧（约1.0秒 → 0.8秒），增速放缓
-      baseInterval = 58 - (this.currentLevel - 10) * 2 // 58, 56, 54, 52, 50, 48
-      baseInterval = Math.max(48, baseInterval)
+      maxSpeedInterval = 35 // 第11-15层最快约0.58秒
     } else {
-      // 第16层之后：从48帧缓慢降到42帧（约0.8秒 → 0.7秒），增速非常缓慢
-      baseInterval = 48 - (this.currentLevel - 15) * 1.2 // 每层减1.2帧，到第20层约43.2帧
-      baseInterval = Math.max(42, baseInterval) // 最低42帧（约0.7秒），不会太快
+      maxSpeedInterval = 30 // 第16层之后最快约0.5秒
     }
     
-    // **修复**：游戏刚开始时（前1.5秒）有极短延迟，让敌人几乎立即开始生成
-    // 前1.5秒内，逐渐减少延迟，让第一个敌人在约0.5秒后出现
-    let initialDelayBonus = 0
-    if (levelElapsedTime < 1.5) {
-      // 第一秒：延迟30帧（0.5秒）
-      // 第1.5秒：延迟0帧（正常间隔）
-      // 线性递减
-      initialDelayBonus = (1.5 - levelElapsedTime) * 20 // 从30递减到0
-      initialDelayBonus = Math.max(0, initialDelayBonus)
-    }
+    // 一层开始时的初始间隔（很慢，让玩家适应）
+    const initialSpawnInterval = 150 // 约2.5秒开始
     
-    let initialSpawnInterval = baseInterval + initialDelayBonus
+    // 一层内逐渐加速：从150帧逐渐降到maxSpeedInterval
+    // 使用平滑曲线，在30秒内完成加速
+    const accelerationTime = 30 // 加速时间（秒）
+    const speedProgress = Math.min(1.0, levelElapsedTime / accelerationTime)
     
-    // **修复**：每一层内的时间递减更缓慢，让生成速度增长更平缓
-    // 前几层的时间递减更慢，后面逐渐加快
-    let timeReductionMax: number
-    let timeReductionSpeed: number
-    if (this.currentLevel <= 3) {
-      // 前3层：时间递减很慢（最多减少40%，30秒内完成）
-      timeReductionMax = 0.4
-      timeReductionSpeed = 30
-    } else if (this.currentLevel <= 10) {
-      // 第4-10层：中等递减（最多减少55%，30秒内完成）
-      timeReductionMax = 0.55
-      timeReductionSpeed = 30
-    } else {
-      // 第10层之后：正常递减（最多减少70%，30秒内完成）
-      timeReductionMax = 0.7
-      timeReductionSpeed = 30
-    }
+    // 使用平方曲线让加速更平滑
+    const smoothProgress = speedProgress * speedProgress
     
-    const timeReductionPercent = Math.min(timeReductionMax, levelElapsedTime / timeReductionSpeed)
-    const baseSpawnInterval = Math.max(20, initialSpawnInterval * (1 - timeReductionPercent))
+    // 计算当前间隔：从慢到快
+    const baseSpawnInterval = initialSpawnInterval - (initialSpawnInterval - maxSpeedInterval) * smoothProgress
     
     // 根据敌人数量微调：敌人很多时才稍微减慢，但影响很小，确保持续生成
     // 只在敌人数量非常多时（>100）才开始明显减慢，但永远不会停止
@@ -632,7 +623,10 @@ export class TestGameEngine {
     const types = [
       // 基础敌人（保持高权重，确保始终出现）
       { type: 'infantry', weight: 100, layerStart: 1 },
-      { type: 'bug', weight: 80, layerStart: 3 },
+      // 快速虫：只在冷却时间为0且波次未满时可用
+      ...(this.bugWaveCooldown <= 0 && this.bugWaveCount < this.bugWaveSize 
+        ? [{ type: 'bug', weight: 80, layerStart: 3 }] 
+        : []),
       
       // 阶段2（新敌人权重较低，逐步增加）
       { type: 'archer', weight: 60, layerStart: 5 },
@@ -673,6 +667,16 @@ export class TestGameEngine {
       if (random <= currentWeight) {
         selectedType = t.type
         break
+      }
+    }
+    
+    // 如果选择了快速虫，更新计数
+    if (selectedType === 'bug') {
+      this.bugWaveCount++
+      // 如果达到波次数量，开始冷却
+      if (this.bugWaveCount >= this.bugWaveSize) {
+        this.bugWaveCooldown = this.bugWaveCooldownDuration
+        this.bugWaveCount = 0
       }
     }
     
@@ -1086,25 +1090,35 @@ export class TestGameEngine {
         
       case 'healer':
         // 治疗师：治疗附近的敌人
+        const healerEnemy = enemy as any
+        if (!healerEnemy.lastSkill) healerEnemy.lastSkill = now - 5000 // 让治疗师立即可以治疗
+        if (!healerEnemy.skillCooldown) healerEnemy.skillCooldown = this.getSkillCooldown('healer')
+        
         const healRange = 150
-        this.enemies.forEach(other => {
-          if (other !== enemy && other.health < other.maxHealth) {
-            const dxx = other.x - enemy.x
-            const dyy = other.y - enemy.y
-            const distSq = dxx * dxx + dyy * dyy
-            const healRangeSq = healRange * healRange
-            if (distSq < healRangeSq && now - enemy.lastAttack >= enemy.attackCooldown) {
-              other.health = Math.min(other.maxHealth, other.health + 3)
-              enemy.lastAttack = now
+        if (now - healerEnemy.lastSkill >= healerEnemy.skillCooldown) {
+          this.enemies.forEach(other => {
+            if (other !== enemy && other.health < other.maxHealth) {
+              const dxx = other.x - enemy.x
+              const dyy = other.y - enemy.y
+              const distSq = dxx * dxx + dyy * dyy
+              const healRangeSq = healRange * healRange
+              if (distSq < healRangeSq) {
+                other.health = Math.min(other.maxHealth, other.health + 5 + this.currentLevel)
+                // 添加治疗效果
+                this.addHitEffect(other.x, other.y, false, '#00ff88')
+              }
             }
-          }
-        })
+          })
+          healerEnemy.lastSkill = now
+        }
+        
         if (distance > 0) {
           const speed = (enemy.speed || 0.6) * 0.6
           enemy.x += (dx / distance) * speed
           enemy.y += (dy / distance) * speed
         }
-          break
+        // 治疗师没有接触伤害，专心治疗
+        break
         
       case 'grenadier':
         // 投弹手：抛射抛物线攻击
@@ -1134,12 +1148,45 @@ export class TestGameEngine {
         
       case 'phantom':
         // 幻影刺客：隐身接近，背刺
+        const phantomEnemy = enemy as any
+        if (!phantomEnemy.invisibleTimer) phantomEnemy.invisibleTimer = 0
+        
+        // 隐身周期：每5秒隐身3秒
+        const invisibleCycle = 5000 // 5秒一个周期
+        const invisibleDuration = 3000 // 隐身3秒
+        const cycleTime = now % invisibleCycle
+        phantomEnemy.isInvisible = cycleTime < invisibleDuration
+        
+        // 隐身时移动更快，非隐身时正常
         if (distance > 0) {
-          const speed = (enemy.speed || 1.8) * 1.8
+          const speedMultiplier = phantomEnemy.isInvisible ? 1.5 : 1.0
+          const speed = (enemy.speed || 1.8) * speedMultiplier
           enemy.x += (dx / distance) * speed
           enemy.y += (dy / distance) * speed
         }
-        this.handleContactDamage(enemy, this.currentLevel)
+        
+        // 背刺检测：从玩家背后攻击时造成更高伤害
+        // 判断是否在玩家背后：敌人的方向与玩家朝向相反
+        const playerDirection = Math.atan2(this.playerY - this.playerLastY, this.playerX - this.playerLastX)
+        const enemyToPlayer = Math.atan2(dy, dx)
+        let angleDiff = Math.abs(enemyToPlayer - playerDirection)
+        if (angleDiff > Math.PI) angleDiff = Math.PI * 2 - angleDiff
+        const isBackstab = angleDiff > Math.PI * 0.7 // 从背后约70%的角度
+        
+        if (isBackstab && phantomEnemy.isInvisible && distance < 30) {
+          // 背刺：造成3倍伤害
+          const backstabDamage = this.calculateContactDamage(this.currentLevel, 'phantom') * 3
+          const nowTime = Date.now()
+          if (nowTime >= this.playerIFrameUntil) {
+            this.playerHealth -= backstabDamage
+            this.playerIFrameUntil = nowTime + 500 // 短无敌帧
+            this.addHitEffect(this.playerX, this.playerY, false, '#ff00ff')
+            phantomEnemy.isInvisible = false // 背刺后显形
+            phantomEnemy.invisibleTimer = now + 5000 // 5秒后才能再次隐身
+          }
+        } else {
+          this.handleContactDamage(enemy, this.currentLevel)
+        }
         break
 
       case 'charger':
@@ -1557,24 +1604,17 @@ export class TestGameEngine {
   
   // 召唤师召唤
   private summonMinions(enemy: any) {
-    // 召唤快速虫
+    // 召唤快速虫，使用createEnemyByType确保完整初始化
     for (let i = 0; i < 2; i++) {
       const angle = Math.random() * Math.PI * 2
       const offset = 60 + Math.random() * 40
       const spawnX = enemy.x + Math.cos(angle) * offset
       const spawnY = enemy.y + Math.sin(angle) * offset
       
-      const bug = {
-        x: spawnX,
-        y: spawnY,
-        size: 12,
-        color: '#44ff44',
-        health: 5,
-        maxHealth: 5,
-        type: 'bug',
-        speed: 2.0,
-      icdUntil: 0
-    }
+      // 使用正确的创建方法，确保所有属性都被初始化
+      const baseHealth = (20 * (1.0 + (this.currentLevel - 1) * 0.1)) * 0.1
+      const baseSize = 18 + this.currentLevel * 0.5
+      const bug = this.createEnemyByType('bug', this.currentLevel, spawnX, spawnY, baseHealth, baseSize * 0.7)
       this.enemies.push(bug)
     }
   }
@@ -2342,6 +2382,8 @@ export class TestGameEngine {
     this.ctx.translate(enemy.x, enemy.y)
 
     const isElite = (enemy as any).isElite || false
+    const phantomEnemy = enemy as any
+    const isInvisible = enemy.type === 'phantom' && phantomEnemy.isInvisible
     
     // 精英敌人：绘制光环效果
     if (isElite) {
@@ -2404,19 +2446,35 @@ export class TestGameEngine {
         this.ctx.fill()
     } else {
       // 默认：方形或圆形
+      // 幻影隐身时半透明
+      if (isInvisible) {
+        this.ctx.globalAlpha = 0.3
+      }
         this.ctx.fillStyle = enemy.color
       if (enemy.type === 'charger') {
         // 冲锋者：圆形
         this.ctx.beginPath()
         this.ctx.arc(0, 0, enemy.size / 2, 0, Math.PI * 2)
         this.ctx.fill()
+      } else if (enemy.type === 'phantom') {
+        // 幻影：菱形
+        this.ctx.beginPath()
+        this.ctx.moveTo(0, -enemy.size/2)
+        this.ctx.lineTo(enemy.size/2, 0)
+        this.ctx.lineTo(0, enemy.size/2)
+        this.ctx.lineTo(-enemy.size/2, 0)
+        this.ctx.closePath()
+        this.ctx.fill()
       } else {
         this.ctx.fillRect(-enemy.size/2, -enemy.size/2, enemy.size, enemy.size)
       }
+      if (isInvisible) {
+        this.ctx.globalAlpha = 1.0
+      }
     }
 
-    // 绘制敌人眼睛
-    if (enemy.type !== 'swarm') { // 群体型太小时不画眼睛
+    // 绘制敌人眼睛（隐身时不绘制眼睛）
+    if (enemy.type !== 'swarm' && !isInvisible) { // 群体型太小时不画眼睛，隐身时不画眼睛
       this.ctx.fillStyle = '#ff0000'
       this.ctx.beginPath()
       this.ctx.arc(-enemy.size/4, -enemy.size/4, 2, 0, Math.PI * 2)
@@ -2728,6 +2786,10 @@ export class TestGameEngine {
 
   // 更新玩家移动
   private updatePlayerMovement() {
+    // 保存上一帧位置（用于计算移动方向，供phantom背刺检测使用）
+    this.playerLastX = this.playerX
+    this.playerLastY = this.playerY
+    
     // 从gameState获取移动速度
     const baseMoveSpeed = 2.0 // 降低移动速度以增加策略性
     const moveSpeed = this.gameState?.player?.moveSpeed ? baseMoveSpeed * this.gameState.player.moveSpeed : baseMoveSpeed
@@ -2780,6 +2842,9 @@ export class TestGameEngine {
     // 重置层级开始时间和生成计时器
     this.levelStartTime = Date.now()
     this.enemySpawnTimer = 0
+    // 重置快速虫波次控制
+    this.bugWaveCount = 0
+    this.bugWaveCooldown = 0
     
     // 播放升级/进入下一层音效
     this.audioSystem.playSoundEffect('level_up')

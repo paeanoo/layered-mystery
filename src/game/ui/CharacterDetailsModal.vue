@@ -83,6 +83,7 @@
 
       <!-- 底部提示 -->
       <div class="modal-footer">
+        <p class="continue-hint">点击空格或P键继续游戏</p>
       </div>
     </div>
   </div>
@@ -311,6 +312,23 @@ const formatTime = (seconds: number) => {
   text-align: center;
   padding-top: 1rem;
   border-top: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.continue-hint {
+  color: #00ff88;
+  font-size: 1rem;
+  margin: 0;
+  opacity: 0.8;
+  animation: pulse 2s ease-in-out infinite;
+}
+
+@keyframes pulse {
+  0%, 100% {
+    opacity: 0.8;
+  }
+  50% {
+    opacity: 1;
+  }
 }
 
 /* 响应式设计 */
