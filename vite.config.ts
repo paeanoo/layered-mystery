@@ -17,7 +17,7 @@ export default defineConfig({
       }
     }
   ],
-  base: '/', // Vercel 部署使用根路径
+  base: '/', // Netlify 部署使用根路径
   resolve: {
     alias: {
       '@': resolve(__dirname, 'src')
@@ -37,12 +37,18 @@ export default defineConfig({
     outDir: 'dist',
     assetsDir: 'assets',
     sourcemap: false, // 生产环境关闭 sourcemap
+    assetsInlineLimit: 4096, // 小于 4kb 的资源内联
+    cssCodeSplit: true,
     rollupOptions: {
       output: {
         manualChunks: {
           vendor: ['vue', 'vue-router', 'pinia'],
           supabase: ['@supabase/supabase-js']
-        }
+        },
+        // 确保使用正确的路径格式
+        assetFileNames: 'assets/[name]-[hash][extname]',
+        chunkFileNames: 'assets/[name]-[hash].js',
+        entryFileNames: 'assets/[name]-[hash].js'
       }
     }
   }

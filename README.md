@@ -125,17 +125,53 @@ src/
 
 ### 前端部署
 
-推荐使用 Vercel 或 Netlify 进行部署：
+#### Netlify 部署（推荐）
+
+项目已配置 `netlify.toml`，可以直接部署到 Netlify：
+
+**方法一：通过 Git 仓库部署（推荐）**
+1. 将代码推送到 GitHub/GitLab/Bitbucket
+2. 登录 [Netlify](https://app.netlify.com)
+3. 点击 "Add new site" -> "Import an existing project"
+4. 选择你的 Git 仓库
+5. Netlify 会自动检测配置：
+   - Build command: `npm run build`
+   - Publish directory: `dist`
+6. 在 "Environment variables" 中添加：
+   - `VITE_SUPABASE_URL`
+   - `VITE_SUPABASE_ANON_KEY`
+7. 点击 "Deploy site"
+
+**方法二：通过 Netlify CLI**
+```bash
+# 安装 Netlify CLI
+npm install -g netlify-cli
+
+# 登录 Netlify
+netlify login
+
+# 构建项目
+npm run build
+
+# 部署到 Netlify
+netlify deploy --prod
+```
+
+**方法三：手动部署**
+1. 构建项目：`npm run build`
+2. 登录 Netlify 控制台
+3. 拖拽 `dist` 目录到 Netlify 部署区域
+
+#### Vercel 部署
+
+如果需要部署到 Vercel，项目也包含 `vercel.json` 配置：
 
 ```bash
-# Vercel
 npm install -g vercel
 vercel --prod
-
-# Netlify
-npm run build
-# 上传 dist 目录到 Netlify
 ```
+
+**注意：** 记得在部署平台设置环境变量 `VITE_SUPABASE_URL` 和 `VITE_SUPABASE_ANON_KEY`
 
 ## 开发指南
 
