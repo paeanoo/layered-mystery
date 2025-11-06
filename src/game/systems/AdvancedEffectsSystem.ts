@@ -316,6 +316,21 @@ export class AdvancedEffectsSystem {
         }
         break
 
+      case 'shadow_particles':
+        baseConfig = {
+          count: 20,
+          spread: 360,
+          speed: { min: 60, max: 150 },
+          size: { min: 2, max: 5 },
+          life: { min: 400, max: 800 },
+          colors: ['#4400AA', '#8800FF', '#AA44FF'],
+          gravity: -50,
+          friction: 0.9,
+          fadeOut: true,
+          rotate: true
+        }
+        break
+
       default:
         baseConfig = {
           count: 10,

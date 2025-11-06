@@ -105,7 +105,7 @@
         <span class="stat-value">{{ projectileCount }}</span>
       </div>
       <div class="stat-item">
-        <span class="stat-label">攻击力</span>
+        <span class="stat-label">伤害</span>
         <span class="stat-value">{{ Math.round(damage) }}</span>
       </div>
       <div class="stat-item">
@@ -204,7 +204,7 @@ const getPassiveEffects = (passiveId: string) => {
       effects.push({ label: '攻击速度', value: `+${(passive.value * 100).toFixed(0)}%` })
       break
     case 'damage':
-      effects.push({ label: '攻击伤害', value: `+${(passive.value * 100).toFixed(0)}%` })
+      effects.push({ label: '伤害', value: `+${(passive.value * 100).toFixed(0)}%` })
       break
     case 'crit_chance':
       effects.push({ label: '暴击率', value: `+${(passive.value * 100).toFixed(0)}%` })

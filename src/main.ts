@@ -3,6 +3,8 @@ import { createPinia } from 'pinia'
 import router from './router'
 import App from './App.vue'
 import './style.css'
+import { useAuthStore } from './stores/auth'
+import { auth } from './stores/supabase'
 
 // 检查 DOM 是否准备就绪
 const checkDOM = () => {
@@ -35,8 +37,21 @@ try {
 
   const app = createApp(App)
 
-  app.use(createPinia())
+  const pinia = createPinia()
+  app.use(pinia)
   app.use(router)
+
+  // 初始化认证状态
+  const authStore = useAuthStore()
+  authStore.init()
+
+  // 监听认证状态变化
+  if (auth.onAuthStateChange) {
+    auth.onAuthStateChange((event, session) => {
+      console.log('认证状态变化:', event, session?.user?.id)
+      authStore.init()
+    })
+  }
 
   // 错误处理
   app.config.errorHandler = (err, instance, info) => {

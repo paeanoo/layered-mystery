@@ -5,35 +5,40 @@
       <button class="btn btn-secondary" @click="goHome">返回主页</button>
     </div>
 
-    <div class="season-selector" v-if="seasons.length > 0">
-      <h3>选择赛季</h3>
-      <div class="season-tabs">
-        <button 
-          v-for="season in seasons" 
-          :key="season.id"
-          class="btn season-tab"
-          :class="{ active: selectedSeason?.id === season.id }"
-          @click="selectSeason(season)"
-        >
-          {{ season.name }}
-        </button>
+    <!-- 当前用户信息卡片 -->
+    <div v-if="authStore.isAuthenticated && currentPlayerScore" class="current-player-card">
+      <div class="current-player-header">
+        <h3>我的排名</h3>
+      </div>
+      <div class="current-player-stats">
+        <div class="current-stat-item">
+          <span class="current-stat-label">排名</span>
+          <span class="current-stat-value rank-value">#{{ currentPlayerScore.rank }}</span>
+        </div>
+        <div class="current-stat-item">
+          <span class="current-stat-label">最高分数</span>
+          <span class="current-stat-value score-value">{{ currentPlayerScore.score.toLocaleString() }}</span>
+        </div>
+        <div class="current-stat-item">
+          <span class="current-stat-label">最高层数</span>
+          <span class="current-stat-value">{{ currentPlayerScore.level }}</span>
+        </div>
       </div>
     </div>
-
-    <div class="current-season-info" v-if="selectedSeason">
-      <h3>{{ selectedSeason.name }}</h3>
-      <p>主题: {{ selectedSeason.theme }}</p>
-      <p>结束时间: {{ formatDate(selectedSeason.endDate) }}</p>
+    <div v-else-if="authStore.isAuthenticated && !loading" class="current-player-card no-record">
+      <div class="current-player-header">
+        <h3>我的排名</h3>
+      </div>
+      <div class="no-record-message">
+        <p>还没有游戏记录，快来开始你的第一局吧！</p>
+      </div>
     </div>
 
     <div class="leaderboard-content" v-if="leaderboard.length > 0">
       <div class="leaderboard-header-row">
-        <div class="rank-col">排名</div>
         <div class="player-col">玩家</div>
-        <div class="score-col">分数</div>
         <div class="level-col">层数</div>
-        <div class="time-col">时间</div>
-        <div class="build-col">构筑</div>
+        <div class="score-col">分数</div>
       </div>
 
       <div class="leaderboard-entries">
@@ -46,34 +51,14 @@
             'current-player': entry.playerName === currentPlayerName
           }"
         >
-          <div class="rank-col">
-            <span class="rank-number" :class="`rank-${index + 1}`">
-              {{ index + 1 }}
-            </span>
-          </div>
           <div class="player-col">
             <span class="player-name">{{ entry.playerName }}</span>
-          </div>
-          <div class="score-col">
-            <span class="score">{{ entry.score.toLocaleString() }}</span>
           </div>
           <div class="level-col">
             <span class="level">{{ entry.level }}</span>
           </div>
-          <div class="time-col">
-            <span class="time">{{ formatTime(entry.time) }}</span>
-          </div>
-          <div class="build-col">
-            <div class="build-icons">
-              <span 
-                v-for="passiveId in entry.build" 
-                :key="passiveId"
-                class="build-icon"
-                :title="getPassiveName(passiveId)"
-              >
-                {{ getPassiveIcon(passiveId) }}
-              </span>
-            </div>
+          <div class="score-col">
+            <span class="score">{{ entry.score.toLocaleString() }}</span>
           </div>
         </div>
       </div>
@@ -90,68 +75,59 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted, computed } from 'vue'
-import { useRouter } from 'vue-router'
+import { ref, onMounted, computed, watch, onActivated } from 'vue'
+import { useRouter, useRoute } from 'vue-router'
 import { gameData } from '../stores/supabase'
+import { useAuthStore } from '../stores/auth'
 import { PASSIVE_ATTRIBUTES } from '../types/game'
-import type { SeasonConfig, LeaderboardEntry } from '../types/game'
+import type { LeaderboardEntry } from '../types/game'
 
 const router = useRouter()
+const route = useRoute()
+const authStore = useAuthStore()
 
-const seasons = ref<SeasonConfig[]>([])
-const selectedSeason = ref<SeasonConfig | null>(null)
 const leaderboard = ref<LeaderboardEntry[]>([])
 const loading = ref(false)
-const currentPlayerName = ref('玩家') // 这里应该从用户状态获取
+const currentPlayerName = computed(() => authStore.playerName)
+const currentPlayerScore = ref<{
+  score: number
+  level: number
+  rank: number
+  time: number
+  build: string[]
+} | null>(null)
 
-const selectSeason = async (season: SeasonConfig) => {
-  selectedSeason.value = season
-  await loadLeaderboard(season.id)
-}
-
-const loadLeaderboard = async (seasonId: string) => {
+const loadLeaderboard = async () => {
   loading.value = true
   try {
-    const data = await gameData.getLeaderboard(seasonId)
-    leaderboard.value = data.map((entry, index) => ({
+    const data = await gameData.getLeaderboard() as Array<{
+      id: string
+      player_name: string
+      score: number
+      level: number
+      time: number
+      build: string[]
+      rank: number
+    }>
+    leaderboard.value = data.map((entry) => ({
       id: entry.id,
-      playerName: entry.player_name,
+      playerName: entry.player_name || '未知玩家',
       score: entry.score,
       level: entry.level,
       time: entry.time,
-      build: entry.build,
-      seasonId: seasonId,
-      rank: index + 1
+      build: entry.build || [],
+      rank: entry.rank
     }))
+    
+    // 加载当前用户的分数和排名
+    if (authStore.isAuthenticated && authStore.user) {
+      const playerScore = await gameData.getPlayerBestScore(authStore.user.id)
+      currentPlayerScore.value = playerScore
+    }
   } catch (error) {
     console.error('加载排行榜失败:', error)
   } finally {
     loading.value = false
-  }
-}
-
-const loadSeasons = async () => {
-  try {
-    // 这里应该从API获取赛季列表
-    // 暂时使用模拟数据
-    seasons.value = [
-      {
-        id: '1',
-        name: '第一赛季',
-        theme: '极简风格',
-        seed: 'season1',
-        startDate: '2024-01-01',
-        endDate: '2024-01-31',
-        isActive: true
-      }
-    ]
-    
-    if (seasons.value.length > 0) {
-      selectedSeason.value = seasons.value[0]
-      await loadLeaderboard(seasons.value[0].id)
-    }
-  } catch (error) {
-    console.error('加载赛季信息失败:', error)
   }
 }
 
@@ -180,7 +156,20 @@ const getPassiveIcon = (passiveId: string) => {
 }
 
 onMounted(() => {
-  loadSeasons()
+  loadLeaderboard()
+})
+
+// 当页面可见时刷新排行榜（从游戏页面返回时）
+onActivated(() => {
+  // 当从其他页面返回时刷新排行榜
+  loadLeaderboard()
+})
+
+// 监听路由变化，当进入排行榜页面时刷新
+watch(() => route.path, (newPath) => {
+  if (newPath === '/leaderboard') {
+    loadLeaderboard()
+  }
 })
 </script>
 
@@ -205,61 +194,6 @@ onMounted(() => {
   text-shadow: 0 0 20px rgba(0, 255, 136, 0.5);
 }
 
-.season-selector {
-  margin-bottom: 2rem;
-}
-
-.season-selector h3 {
-  color: var(--text-primary);
-  margin-bottom: 1rem;
-  font-size: 1.5rem;
-}
-
-.season-tabs {
-  display: flex;
-  gap: 1rem;
-  flex-wrap: wrap;
-}
-
-.season-tab {
-  background: var(--secondary-bg);
-  color: var(--text-primary);
-  border: 2px solid var(--border-color);
-  padding: 0.8rem 1.5rem;
-  border-radius: 8px;
-  transition: all 0.3s ease;
-}
-
-.season-tab:hover {
-  border-color: var(--accent-color);
-  transform: translateY(-2px);
-}
-
-.season-tab.active {
-  background: var(--accent-color);
-  color: var(--primary-bg);
-  border-color: var(--accent-color);
-}
-
-.current-season-info {
-  background: var(--secondary-bg);
-  border: 2px solid var(--border-color);
-  border-radius: 12px;
-  padding: 1.5rem;
-  margin-bottom: 2rem;
-}
-
-.current-season-info h3 {
-  color: var(--accent-color);
-  margin-bottom: 1rem;
-  font-size: 1.5rem;
-}
-
-.current-season-info p {
-  color: var(--text-secondary);
-  margin-bottom: 0.5rem;
-}
-
 .leaderboard-content {
   background: var(--secondary-bg);
   border: 2px solid var(--border-color);
@@ -267,28 +201,28 @@ onMounted(() => {
   overflow: hidden;
 }
 
-.leaderboard-header-row {
-  display: grid;
-  grid-template-columns: 80px 1fr 120px 80px 100px 200px;
-  background: var(--primary-bg);
-  padding: 1rem;
-  font-weight: bold;
-  color: var(--text-primary);
-  border-bottom: 2px solid var(--border-color);
-}
+    .leaderboard-header-row {
+      display: grid;
+      grid-template-columns: 2fr 1fr 1fr;
+      background: var(--primary-bg);
+      padding: 1rem;
+      font-weight: bold;
+      color: var(--text-primary);
+      border-bottom: 2px solid var(--border-color);
+    }
 
 .leaderboard-entries {
   max-height: 60vh;
   overflow-y: auto;
 }
 
-.leaderboard-entry {
-  display: grid;
-  grid-template-columns: 80px 1fr 120px 80px 100px 200px;
-  padding: 1rem;
-  border-bottom: 1px solid var(--border-color);
-  transition: all 0.3s ease;
-}
+    .leaderboard-entry {
+      display: grid;
+      grid-template-columns: 2fr 1fr 1fr;
+      padding: 1rem;
+      border-bottom: 1px solid var(--border-color);
+      transition: all 0.3s ease;
+    }
 
 .leaderboard-entry:hover {
   background: rgba(0, 255, 136, 0.1);
@@ -372,22 +306,94 @@ onMounted(() => {
   font-size: 1.2rem;
 }
 
+.current-player-card {
+  background: var(--secondary-bg);
+  border: 2px solid var(--accent-color);
+  border-radius: 12px;
+  padding: 1.5rem;
+  margin-bottom: 2rem;
+  box-shadow: 0 4px 20px rgba(0, 255, 136, 0.2);
+}
+
+.current-player-card.no-record {
+  border-color: var(--border-color);
+}
+
+.current-player-header {
+  margin-bottom: 1rem;
+  border-bottom: 2px solid var(--accent-color);
+  padding-bottom: 0.5rem;
+}
+
+.current-player-header h3 {
+  color: var(--accent-color);
+  font-size: 1.5rem;
+  margin: 0;
+  text-shadow: 0 0 10px rgba(0, 255, 136, 0.5);
+}
+
+.current-player-stats {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 1.5rem;
+}
+
+.current-stat-item {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 1rem;
+  background: rgba(0, 255, 136, 0.05);
+  border-radius: 8px;
+  border: 1px solid rgba(0, 255, 136, 0.2);
+}
+
+.current-stat-label {
+  color: var(--text-secondary);
+  font-size: 0.9rem;
+  font-weight: 500;
+}
+
+.current-stat-value {
+  color: var(--text-primary);
+  font-size: 1.5rem;
+  font-weight: bold;
+}
+
+.current-stat-value.rank-value {
+  color: #ffd700;
+}
+
+.current-stat-value.score-value {
+  color: var(--accent-color);
+  text-shadow: 0 0 10px rgba(0, 255, 136, 0.5);
+}
+
+.no-record-message {
+  text-align: center;
+  padding: 1rem;
+  color: var(--text-secondary);
+}
+
+.no-record-message p {
+  margin: 0;
+  font-size: 1rem;
+}
+
 @media (max-width: 768px) {
-  .leaderboard-header-row,
-  .leaderboard-entry {
-    grid-template-columns: 60px 1fr 80px 60px 80px 120px;
-    font-size: 0.9rem;
-  }
-  
-  .build-icons {
-    gap: 0.3rem;
-  }
-  
-  .build-icon {
-    width: 20px;
-    height: 20px;
-    font-size: 0.7rem;
+  .current-player-stats {
+    grid-template-columns: 1fr;
+    gap: 1rem;
   }
 }
+
+    @media (max-width: 768px) {
+      .leaderboard-header-row,
+      .leaderboard-entry {
+        grid-template-columns: 2fr 1fr 1fr;
+        font-size: 0.9rem;
+      }
+    }
 </style>
 

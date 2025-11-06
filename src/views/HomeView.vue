@@ -1,5 +1,19 @@
 <template>
   <div class="home-container">
+        <div class="user-info" v-if="authStore.isAuthenticated">
+          <div class="user-details">
+            <span class="user-name">👤 {{ authStore.playerName }}</span>
+            <span v-if="!authStore.user?.email_confirmed_at" class="email-warning" title="邮箱未验证">
+              ⚠️
+            </span>
+            <button class="btn btn-small" @click="goToSettings">设置</button>
+            <button class="btn btn-small" @click="handleLogout">登出</button>
+          </div>
+        </div>
+    <div class="user-info" v-else>
+      <button class="btn btn-small" @click="goToLogin">登录/注册</button>
+    </div>
+
     <div class="hero-section">
       <h1 class="game-title">层叠秘境</h1>
       <p class="game-subtitle">轻量级爬塔冒险游戏</p>
@@ -16,6 +30,13 @@
       </button>
       <button class="btn btn-secondary" @click="viewLeaderboard">
         🏆 排行榜
+      </button>
+      <button 
+        v-if="!authStore.isAuthenticated" 
+        class="btn btn-secondary login-btn-main" 
+        @click="goToLogin"
+      >
+        🔐 登录/注册
       </button>
     </div>
 
@@ -35,46 +56,25 @@
         <div class="feature-card">
           <div class="feature-icon">🏆</div>
           <h3>公平竞技</h3>
-          <p>统一赛季种子，消除运气差异，纯策略比拼</p>
+          <p>统一随机种子，消除运气差异，纯策略比拼</p>
         </div>
         <div class="feature-card">
           <div class="feature-icon">🔄</div>
           <h3>可持续复玩</h3>
-          <p>每周主题变化，保持内容新鲜感</p>
+          <p>多样化的被动组合，每次游戏都有新体验</p>
         </div>
       </div>
     </div>
 
-    <div class="current-season" v-if="currentSeason">
-      <h3>当前赛季</h3>
-      <div class="season-info">
-        <p><strong>{{ currentSeason.name }}</strong></p>
-        <p>主题: {{ currentSeason.theme }}</p>
-        <p>结束时间: {{ formatDate(currentSeason.endDate) }}</p>
-      </div>
-    </div>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
-import { useGameStore } from '../stores/game'
-import type { SeasonConfig } from '../types/game'
+import { useAuthStore } from '../stores/auth'
 
 const router = useRouter()
-const gameStore = useGameStore()
-
-const currentSeason = ref<SeasonConfig | null>(null)
-
-onMounted(async () => {
-  try {
-    // 获取当前赛季信息
-    currentSeason.value = gameStore.currentSeason
-  } catch (error) {
-    console.error('获取赛季信息失败:', error)
-  }
-})
+const authStore = useAuthStore()
 
 const startGame = () => {
   router.push('/game')
@@ -84,9 +84,22 @@ const viewLeaderboard = () => {
   router.push('/leaderboard')
 }
 
-const formatDate = (dateString: string) => {
-  return new Date(dateString).toLocaleDateString('zh-CN')
+const handleLogout = async () => {
+  try {
+    await authStore.signOut()
+    router.push('/login')
+  } catch (error) {
+    console.error('登出失败:', error)
+  }
 }
+
+    const goToLogin = () => {
+      router.push('/login')
+    }
+
+    const goToSettings = () => {
+      router.push('/settings')
+    }
 </script>
 
 <style scoped>
@@ -97,6 +110,63 @@ const formatDate = (dateString: string) => {
   align-items: center;
   padding: 2rem;
   background: linear-gradient(135deg, #1a1a1a 0%, #2d2d2d 100%);
+}
+
+.user-info {
+  position: fixed;
+  top: 1.5rem;
+  right: 1.5rem;
+  z-index: 100;
+  background: rgba(45, 45, 45, 0.9);
+  backdrop-filter: blur(10px);
+  border: 2px solid var(--border-color);
+  border-radius: 8px;
+  padding: 0.75rem 1rem;
+  box-shadow: 0 4px 15px rgba(0, 0, 0, 0.3);
+}
+
+.user-details {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+}
+
+.user-name {
+  color: var(--text-primary);
+  font-size: 1rem;
+  font-weight: bold;
+}
+
+.email-warning {
+  color: #ffaa00;
+  font-size: 1rem;
+  margin-left: 0.5rem;
+  cursor: help;
+}
+
+.btn-small {
+  padding: 0.6rem 1.2rem;
+  font-size: 0.95rem;
+  font-weight: bold;
+  border-radius: 6px;
+  transition: all 0.3s ease;
+}
+
+.btn-small:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 4px 12px rgba(0, 255, 136, 0.4);
+}
+
+@media (max-width: 768px) {
+  .user-info {
+    top: 1rem;
+    right: 1rem;
+  }
+
+  .user-details {
+    flex-direction: column;
+    gap: 0.5rem;
+  }
 }
 
 .hero-section {
@@ -134,6 +204,20 @@ const formatDate = (dateString: string) => {
   display: flex;
   gap: 2rem;
   margin-bottom: 4rem;
+  flex-wrap: wrap;
+  justify-content: center;
+}
+
+.login-btn-main {
+  border-color: var(--accent-color);
+  box-shadow: 0 0 15px rgba(0, 255, 136, 0.3);
+}
+
+.login-btn-main:hover {
+  background: var(--accent-color);
+  color: var(--primary-bg);
+  transform: translateY(-2px);
+  box-shadow: 0 4px 20px rgba(0, 255, 136, 0.5);
 }
 
 .btn-primary {
@@ -202,25 +286,6 @@ const formatDate = (dateString: string) => {
 .feature-card p {
   color: var(--text-secondary);
   line-height: 1.6;
-}
-
-.current-season {
-  background: var(--secondary-bg);
-  border: 2px solid var(--border-color);
-  border-radius: 12px;
-  padding: 2rem;
-  text-align: center;
-  max-width: 400px;
-}
-
-.current-season h3 {
-  color: var(--accent-color);
-  margin-bottom: 1rem;
-}
-
-.season-info p {
-  color: var(--text-primary);
-  margin-bottom: 0.5rem;
 }
 
 @media (max-width: 768px) {

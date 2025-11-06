@@ -42,18 +42,21 @@
             </div>
 
             <div class="attribute-group">
-              <label>攻击力:</label>
+              <label>伤害:</label>
               <input v-model.number="attributes.damage" type="number" min="1" class="attr-input" />
+              <span class="attr-hint">(数值)</span>
             </div>
 
             <div class="attribute-group">
               <label>攻击速度:</label>
               <input v-model.number="attributes.attackSpeed" type="number" min="0.1" step="0.1" class="attr-input" />
+              <span class="attr-hint">(倍率，1.0=100%)</span>
             </div>
 
             <div class="attribute-group">
               <label>暴击率:</label>
-              <input v-model.number="attributes.critChance" type="number" min="0" max="1" step="0.01" class="attr-input" />
+              <input v-model.number="critChancePercent" type="number" min="0" max="100" step="0.1" class="attr-input" @input="updateCritChance" />
+              <span class="attr-hint">(%)</span>
             </div>
 
             <div class="attribute-group">
@@ -69,33 +72,19 @@
             <div class="attribute-group">
               <label>移动速度:</label>
               <input v-model.number="attributes.moveSpeed" type="number" min="0.1" step="0.1" class="attr-input" />
+              <span class="attr-hint">(倍率，1.0=100%)</span>
             </div>
 
             <div class="attribute-group">
               <label>生命回复:</label>
               <input v-model.number="attributes.regeneration" type="number" min="0" step="0.1" class="attr-input" />
+              <span class="attr-hint">(数值/秒)</span>
             </div>
 
             <div class="attribute-group">
               <label>生命偷取:</label>
-              <input v-model.number="attributes.lifesteal" type="number" min="0" max="1" step="0.01" class="attr-input" />
-            </div>
-          </div>
-
-          <!-- 被动属性选择 -->
-          <div class="passive-section">
-            <h4>被动属性</h4>
-            <div class="passive-grid">
-              <div 
-                v-for="passive in PASSIVE_ATTRIBUTES" 
-                :key="passive.id"
-                class="passive-item"
-                :class="{ active: attributes.passiveAttributes.includes(passive.id) }"
-                @click="togglePassive(passive.id)"
-              >
-                <span class="passive-icon">{{ passive.icon }}</span>
-                <span class="passive-name">{{ passive.name }}</span>
-              </div>
+              <input v-model.number="lifestealPercent" type="number" min="0" max="100" step="0.1" class="attr-input" @input="updateLifesteal" />
+              <span class="attr-hint">(%)</span>
             </div>
           </div>
         </div>
@@ -113,7 +102,6 @@
 
 <script setup lang="ts">
 import { ref, watch } from 'vue'
-import { PASSIVE_ATTRIBUTES } from '../../types/game'
 import type { PlayerState } from '../../types/game'
 
 interface Props {
@@ -180,10 +168,27 @@ const attributes = ref<PlayerState>({
   passiveAttributes: []
 })
 
+// 百分比属性的显示值（用于输入框）
+const critChancePercent = ref(5) // 暴击率百分比（0-100）
+const lifestealPercent = ref(0) // 生命偷取百分比（0-100）
+
+// 更新暴击率（从百分比转换为小数）
+const updateCritChance = () => {
+  attributes.value.critChance = critChancePercent.value / 100
+}
+
+// 更新生命偷取（从百分比转换为小数）
+const updateLifesteal = () => {
+  attributes.value.lifesteal = lifestealPercent.value / 100
+}
+
 // 监听props变化，同步属性
 watch(() => props.playerStats, (newStats) => {
   if (newStats) {
     attributes.value = { ...newStats }
+    // 同步百分比显示值
+    critChancePercent.value = (newStats.critChance || 0) * 100
+    lifestealPercent.value = (newStats.lifesteal || 0) * 100
   }
 }, { immediate: true })
 
@@ -196,16 +201,6 @@ const closeModal = () => {
 const jumpToLevel = () => {
   if (targetLevel.value >= 1 && targetLevel.value <= 20) {
     emit('jumpToLevel', targetLevel.value)
-  }
-}
-
-// 切换被动属性
-const togglePassive = (passiveId: string) => {
-  const index = attributes.value.passiveAttributes.indexOf(passiveId)
-  if (index > -1) {
-    attributes.value.passiveAttributes.splice(index, 1)
-  } else {
-    attributes.value.passiveAttributes.push(passiveId)
   }
 }
 
@@ -334,6 +329,13 @@ const applyAttributes = () => {
   font-size: 0.9rem;
 }
 
+.attr-hint {
+  color: var(--text-secondary);
+  font-size: 0.75rem;
+  font-style: italic;
+  margin-top: -0.3rem;
+}
+
 .input-group {
   display: flex;
   align-items: center;
@@ -353,54 +355,6 @@ const applyAttributes = () => {
 .separator {
   color: var(--text-secondary);
   font-weight: bold;
-}
-
-.passive-section {
-  margin-top: 1rem;
-}
-
-.passive-section h4 {
-  color: var(--text-primary);
-  margin-bottom: 1rem;
-}
-
-.passive-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
-  gap: 0.5rem;
-}
-
-.passive-item {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  padding: 0.5rem;
-  border: 1px solid var(--secondary-bg);
-  border-radius: 6px;
-  cursor: pointer;
-  transition: all 0.2s ease;
-  background: var(--secondary-bg);
-}
-
-.passive-item:hover {
-  border-color: var(--accent-color);
-  background: rgba(0, 255, 136, 0.1);
-}
-
-.passive-item.active {
-  border-color: var(--accent-color);
-  background: rgba(0, 255, 136, 0.2);
-}
-
-.passive-icon {
-  font-size: 1.5rem;
-  margin-bottom: 0.25rem;
-}
-
-.passive-name {
-  font-size: 0.8rem;
-  color: var(--text-primary);
-  text-align: center;
 }
 
 .modal-actions {

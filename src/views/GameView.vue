@@ -23,9 +23,24 @@
       @exit="exitGame"
     />
 
+    <!-- Boss奖励选择界面 -->
+    <PassiveSelectionModal
+      :visible="showBossRewardSelection"
+      :level="gameStore.gameState.level"
+      :score="gameStore.gameState.score"
+      :available-passives="gameStore.availableBossRewards as any"
+      :selected-passive="gameStore.selectedBossReward"
+      :player-passives="gameStore.gameState.player.passiveAttributes"
+      :show-actions="false"
+      @close="onBossRewardModalClose"
+      @select="selectBossReward"
+      @confirm="confirmBossReward"
+    />
+
     <!-- 暂停时的角色属性详情界面 -->
+    <!-- **修复**：排除Boss奖励选择时，避免先显示暂停界面 -->
     <CharacterDetailsModal
-      :visible="gameStore.gameState.isPaused && !showPassiveSelection && !gameStore.gameState.isGameOver && !showCharacterAttributesModal"
+      :visible="gameStore.gameState.isPaused && !showPassiveSelection && !showBossRewardSelection && !gameStore.gameState.isGameOver && !showCharacterAttributesModal"
       :player-stats="gameStore.playerStats"
       @close="togglePause"
     />
@@ -44,7 +59,7 @@
       <button class="btn btn-small" @click="togglePause">
         {{ gameStore.gameState.isPaused ? '继续' : '暂停' }}
       </button>
-      <button class="btn btn-small btn-test" @click="openTestModal" style="display: none;">
+      <button class="btn btn-small btn-test" @click="openTestModal">
         测试功能
       </button>
       <button class="btn btn-small" @click="exitGame">退出</button>
@@ -76,8 +91,13 @@ const showPassiveSelection = computed(() => {
   if (gameStore.gameState.isGameOver) {
     return true
   }
-  // 否则检查是否有可用的被动属性
-  return gameStore.availablePassives.length > 0 && !gameStore.selectedPassive
+  // 否则检查是否有可用的被动属性（排除Boss奖励）
+  return gameStore.availablePassives.length > 0 && !gameStore.selectedPassive && gameStore.availableBossRewards.length === 0
+})
+
+const showBossRewardSelection = computed(() => {
+  // Boss奖励选择：有可用奖励且未选择时显示
+  return gameStore.availableBossRewards.length > 0 && !gameStore.selectedBossReward && !gameStore.gameState.isGameOver
 })
 
 
@@ -104,10 +124,10 @@ const updateGameState = () => {
   // 时间更新由TestGameEngine处理，这里不再重复处理
   // 只同步游戏状态到store
   if (gameEngine) {
-    gameStore.gameState.timeRemaining = gameEngine.gameTime
+    gameStore.gameState.timeRemaining = gameEngine.getGameTime()
     gameStore.gameState.level = gameEngine.currentLevel
-    gameStore.gameState.score = gameEngine.score
-    gameStore.gameState.enemiesDefeated = Math.floor(gameEngine.score / 10)
+    gameStore.gameState.score = gameEngine.getScore()
+    gameStore.gameState.enemiesDefeated = Math.floor(gameEngine.getScore() / 10)
   }
 }
 
@@ -168,10 +188,33 @@ const confirmSelection = () => {
       gameEngine.updateGameState(gameStore.gameState)
       // 继续游戏（不是死亡的情况）
       if (!gameStore.gameState.isGameOver) {
-        gameEngine.isPaused = false
+        gameEngine.setPaused(false)
       }
     }
   }
+}
+
+const selectBossReward = (rewardId: string) => {
+  gameStore.selectBossReward(rewardId)
+}
+
+const confirmBossReward = () => {
+  if (gameStore.selectedBossReward) {
+    gameStore.confirmBossRewardSelection()
+    // 更新游戏引擎中的游戏状态
+    if (gameEngine) {
+      gameEngine.updateGameState(gameStore.gameState)
+      // 继续游戏
+      if (!gameStore.gameState.isGameOver) {
+        gameEngine.setPaused(false)
+      }
+    }
+  }
+}
+
+const onBossRewardModalClose = () => {
+  // Boss奖励模态框关闭（通常不允许关闭，必须选择）
+  console.log('Boss奖励选择模态框关闭')
 }
 
 const onPassiveModalClose = () => {
@@ -181,25 +224,47 @@ const onPassiveModalClose = () => {
 
 // 处理关卡完成事件
 const handleLevelComplete = () => {
+  console.log('[handleLevelComplete] 关卡完成回调被调用')
   if (gameStore.gameState.isGameOver) {
-    console.log('游戏结束，触发死亡界面')
+    console.log('[handleLevelComplete] 游戏结束，触发死亡界面')
     // 游戏结束，不需要额外处理，死亡界面会自动显示
-  } else {
-    console.log('时间到，进入下一层')
+    return
+  }
+  
+  try {
+    console.log('[handleLevelComplete] 时间到，进入下一层')
     // 进入下一层，血量回满，分数累积
+    // 注意：gameStore.nextLevel() 会读取 gameState.level 作为 previousLevel
+    // 所以此时 gameState.level 应该还是旧关卡值
+    const levelBefore = gameStore.gameState.level
+    console.log(`[handleLevelComplete] 调用 gameStore.nextLevel()，当前 gameState.level = ${levelBefore}`)
     gameStore.nextLevel()
+    const levelAfter = gameStore.gameState.level
+    console.log(`[handleLevelComplete] gameStore.nextLevel() 完成，gameState.level = ${levelAfter}`)
+    
     // 暂停游戏等待被动属性选择
     gameStore.gameState.isPaused = true
     if (gameEngine) {
-      gameEngine.isPaused = true
+      gameEngine.setPaused(true)
     }
+    console.log('[handleLevelComplete] 游戏已暂停，等待选择')
+  } catch (error) {
+    console.error('[handleLevelComplete] 执行出错:', error)
   }
 }
 
+// 跟踪是否因为测试功能而暂停
+const pausedForTest = ref(false)
+
 const openTestModal = () => {
-  // 打开测试功能时自动暂停游戏
-  if (!gameStore.gameState.isPaused) {
-    togglePause()
+  // 打开测试功能时只暂停游戏引擎，不改变游戏状态的 isPaused
+  // 这样可以避免显示暂停页面
+  // 只有在游戏未暂停时才需要暂停引擎
+  if (!gameStore.gameState.isPaused && gameEngine) {
+    gameEngine.setPaused(true)
+    pausedForTest.value = true
+  } else {
+    pausedForTest.value = false
   }
   showCharacterAttributesModal.value = true
 }
@@ -216,7 +281,17 @@ const togglePause = () => {
   console.log('暂停状态切换:', gameStore.gameState.isPaused)
 }
 
-const exitGame = () => {
+const exitGame = async () => {
+  // 退出前保存当前游戏进度（如果分数大于0）
+  if (gameStore.gameState.score > 0) {
+    try {
+      await gameStore.saveCurrentProgress()
+      console.log('退出游戏，已保存当前分数:', gameStore.gameState.score)
+    } catch (error) {
+      console.error('保存游戏进度失败:', error)
+    }
+  }
+  
   if (gameEngine) {
     gameEngine.stop()
   }
@@ -257,24 +332,18 @@ const getPassiveIcon = (passiveId: string) => {
 // 关闭角色属性设置弹窗
 const closeCharacterAttributesModal = () => {
   showCharacterAttributesModal.value = false
+  // 如果是因为测试功能而暂停的，恢复游戏
+  if (pausedForTest.value && gameEngine) {
+    gameEngine.setPaused(false)
+    pausedForTest.value = false
+  }
 }
 
 // 处理关卡跳转
 const handleJumpToLevel = (level: number) => {
   if (level >= 1 && level <= 20 && gameEngine) {
-    // 跳转到指定关卡
-    gameEngine.currentLevel = level
-    gameStore.gameState.level = level
-    
-    // 清空当前敌人
-    gameEngine.enemies = []
-    gameEngine.projectiles = []
-    
-    // 重新生成敌人
-    for (let i = 0; i < Math.min(35, 8 + level * 3); i++) {
-      gameEngine.spawnEnemy()
-    }
-    
+    // 使用游戏引擎的跳转方法，会模拟正常进入该层
+    gameEngine.jumpToLevel(level)
     console.log(`跳转到关卡 ${level}`)
   }
 }
@@ -283,8 +352,21 @@ const handleJumpToLevel = (level: number) => {
 const handleApplyAttributes = (attributes: PlayerState) => {
   console.log('收到属性应用请求:', attributes)
   
-  // 更新游戏状态中的玩家属性
-  Object.assign(gameStore.gameState.player, attributes)
+  // 更新游戏状态中的玩家属性（只更新可设置的属性，保留其他系统属性）
+  const player = gameStore.gameState.player
+  player.health = Math.max(1, Math.min(attributes.health, attributes.maxHealth))
+  player.maxHealth = Math.max(1, attributes.maxHealth)
+  player.damage = Math.max(1, attributes.damage)
+  player.attackSpeed = Math.max(0.1, attributes.attackSpeed)
+  player.critChance = Math.max(0, Math.min(1, attributes.critChance))
+  player.projectiles = Math.max(1, attributes.projectiles)
+  player.pierce = Math.max(0, attributes.pierce)
+  player.moveSpeed = Math.max(0.1, attributes.moveSpeed)
+  player.regeneration = Math.max(0, attributes.regeneration)
+  player.lifesteal = Math.max(0, Math.min(1, attributes.lifesteal))
+  
+  // 确保生命值不超过最大生命值
+  player.health = Math.min(player.health, player.maxHealth)
   
   console.log('游戏状态已更新:', gameStore.gameState.player)
   
@@ -294,7 +376,7 @@ const handleApplyAttributes = (attributes: PlayerState) => {
     console.log('已同步到游戏引擎')
   }
   
-  console.log('角色属性已应用:', attributes)
+  console.log('角色属性已应用')
 }
 
 const formatTime = (seconds: number) => {

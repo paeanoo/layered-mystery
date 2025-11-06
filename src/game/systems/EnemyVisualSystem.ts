@@ -101,6 +101,19 @@ export class EnemyVisualSystem {
       case 'boss':
         this.drawBossEnemy(ctx, options)
         break
+      // Boss 原型：第5/10/15/20层
+      case 'infantry_captain': // 第5层 重装指挥官（视觉：厚重装甲+肩炮+护盾暗示）
+        this.drawCommanderBoss(ctx, options)
+        break
+      case 'fortress_guard': // 第10层 虫巢母体（视觉：巢穴触须与孵化脉动）
+        this.drawHiveMotherBoss(ctx, options)
+        break
+      case 'void_shaman': // 第15层 暗影刺客（视觉：隐身残影与刀光）
+        this.drawShadowAssassinBoss(ctx, options)
+        break
+      case 'legion_commander': // 第20层 混沌造物（视觉：能量核与形态混沌纹）
+        this.drawChaosConstructBoss(ctx, options)
+        break
       case 'infantry':
       default:
         // 默认士兵风格
@@ -523,7 +536,7 @@ export class EnemyVisualSystem {
     }
 
     // 绘制高速移动四肢
-    this.drawSpeedLimbs(ctx, size, speedEffect, options.animationState === 'moving')
+    this.drawRunnerLimbs(ctx, size)
 
     // 肩部能量指示器
     ctx.fillStyle = '#60A5FA'
@@ -1281,6 +1294,584 @@ export class EnemyVisualSystem {
 
     // 绘制威严光环
     this.drawMajesticAura(ctx, size)
+
+    ctx.restore()
+  }
+
+  // === Boss 专属外观 ===
+  private drawCommanderBoss(ctx: CanvasRenderingContext2D, options: EnemyRenderOptions) {
+    const size = options.size * 2.0 // 优化：更协调的比例
+    const breathe = Math.sin(this.animationTime / 500) * 2
+    const turretRot = (this.animationTime / 800) % (Math.PI * 2)
+    ctx.save()
+    ctx.translate(0, breathe)
+
+    // === 主体：重装机甲 - 更协调的流线型设计 ===
+    // 主身体（使用圆角矩形，更协调）
+    const bodyGradient = ctx.createLinearGradient(0, -size*0.6, 0, size*0.4)
+    bodyGradient.addColorStop(0, '#4A4A4A') // 顶部较亮
+    bodyGradient.addColorStop(0.5, '#2F2F2F') // 中间
+    bodyGradient.addColorStop(1, '#1A1A1A') // 底部较暗
+    ctx.fillStyle = bodyGradient
+    this.drawRoundedRect(ctx, -size*0.25, -size*0.5, size*0.5, size*1.0, size*0.08)
+
+    // 胸部装甲板（更精致的层次）
+    ctx.fillStyle = this.createGradient(ctx, '#6B6B6B', '#4A4A4A', 0, -size*0.3, 0, size*0.1)
+    this.drawRoundedRect(ctx, -size*0.22, -size*0.3, size*0.44, size*0.4, size*0.06)
+    
+    // 中央能源核心（更明显）
+    const corePulse = Math.sin(this.animationTime / 300) * 0.3 + 1.0
+    ctx.fillStyle = '#FF4444'
+    ctx.shadowColor = '#FF4444'
+    ctx.shadowBlur = 12
+    ctx.beginPath()
+    ctx.arc(0, -size*0.05, 6 * corePulse, 0, Math.PI * 2)
+    ctx.fill()
+    ctx.shadowBlur = 0
+    
+    // 核心外环
+    ctx.strokeStyle = '#FF8888'
+    ctx.lineWidth = 2
+    ctx.beginPath()
+    ctx.arc(0, -size*0.05, 8, 0, Math.PI * 2)
+    ctx.stroke()
+
+    // 装甲条纹装饰（更精致的细节）
+    ctx.strokeStyle = '#FF4444'
+    ctx.lineWidth = 2
+    ctx.beginPath()
+    ctx.moveTo(-size*0.2, -size*0.2)
+    ctx.lineTo(size*0.2, -size*0.2)
+    ctx.moveTo(-size*0.2, 0)
+    ctx.lineTo(size*0.2, 0)
+    ctx.moveTo(-size*0.15, size*0.2)
+    ctx.lineTo(size*0.15, size*0.2)
+    ctx.stroke()
+
+    // === 头部：流线型头盔 ===
+    const headGradient = ctx.createLinearGradient(0, -size*0.6, 0, -size*0.4)
+    headGradient.addColorStop(0, '#5A5A5A')
+    headGradient.addColorStop(1, '#3A3A3A')
+    ctx.fillStyle = headGradient
+    ctx.beginPath()
+    ctx.ellipse(0, -size*0.5, size*0.22, size*0.12, 0, 0, Math.PI * 2)
+    ctx.fill()
+
+    // 头盔护目镜（更精致的单眼设计）
+    ctx.fillStyle = '#1A1A1A'
+    ctx.beginPath()
+    ctx.ellipse(0, -size*0.48, size*0.18, size*0.08, 0, 0, Math.PI * 2)
+    ctx.fill()
+    
+    // 单眼扫描镜（红光闪烁，更柔和）
+    const eyePulse = (Math.sin(this.animationTime / 250) * 0.5 + 0.5)
+    ctx.fillStyle = `rgba(255, 68, 68, ${0.6 + 0.4*eyePulse})`
+    ctx.shadowColor = '#FF4444'
+    ctx.shadowBlur = 10
+    ctx.beginPath()
+    ctx.ellipse(0, -size*0.48, size*0.12, size*0.06, 0, 0, Math.PI * 2)
+    ctx.fill()
+    ctx.shadowBlur = 0
+
+    // === 右肩炮台（更精致的旋转炮台）===
+    ctx.save()
+    ctx.translate(size*0.28, -size*0.35)
+    ctx.rotate(turretRot)
+    
+    // 炮台基座
+    ctx.fillStyle = this.createGradient(ctx, '#555555', '#333333', 0, 0, 10, 0)
+    ctx.beginPath()
+    ctx.arc(0, 0, 12, 0, Math.PI * 2)
+    ctx.fill()
+    
+    // 炮管
+    ctx.fillStyle = '#3A3A3A'
+    ctx.fillRect(0, -6, 16, 12)
+    
+    // 炮口发光
+    ctx.fillStyle = '#FF4444'
+    ctx.shadowColor = '#FF4444'
+    ctx.shadowBlur = 6
+    ctx.beginPath()
+    ctx.arc(16, 0, 4, 0, Math.PI * 2)
+    ctx.fill()
+    ctx.shadowBlur = 0
+    ctx.restore()
+
+    // === 左肩通讯阵列（更精致的天线）===
+    ctx.strokeStyle = '#888888'
+    ctx.lineWidth = 3
+    ctx.beginPath()
+    ctx.moveTo(-size*0.28, -size*0.35)
+    ctx.lineTo(-size*0.28, -size*0.55)
+    ctx.stroke()
+    
+    // 天线顶部
+    ctx.fillStyle = '#AAAAAA'
+    ctx.beginPath()
+    ctx.arc(-size*0.28, -size*0.57, 5, 0, Math.PI * 2)
+    ctx.fill()
+    
+    // 信号指示器
+    ctx.fillStyle = '#00B7FF'
+    ctx.shadowColor = '#00B7FF'
+    ctx.shadowBlur = 4
+    ctx.beginPath()
+    ctx.arc(-size*0.28, -size*0.57, 3, 0, Math.PI * 2)
+    ctx.fill()
+    ctx.shadowBlur = 0
+
+    // === 右手重型武器（更精致的转轮枪）===
+    ctx.save()
+    ctx.translate(size*0.15, -size*0.05)
+    
+    // 枪身
+    ctx.fillStyle = this.createGradient(ctx, '#3A3A3A', '#1A1A1A', 0, 0, size*0.3, 0)
+    ctx.fillRect(0, -size*0.06, size*0.3, size*0.12)
+    
+    // 转轮弹仓（更精致的圆形弹仓）
+    ctx.fillStyle = '#222222'
+    ctx.beginPath()
+    ctx.arc(size*0.35, 0, 8, 0, Math.PI * 2)
+    ctx.fill()
+    
+    // 子弹孔
+    ctx.fillStyle = '#444444'
+    for (let i = 0; i < 6; i++) {
+      const angle = (i / 6) * Math.PI * 2 + this.animationTime / 200
+      const bulletX = size*0.35 + Math.cos(angle) * 5
+      const bulletY = Math.sin(angle) * 5
+      ctx.beginPath()
+      ctx.arc(bulletX, bulletY, 2, 0, Math.PI * 2)
+      ctx.fill()
+    }
+    
+    ctx.restore()
+
+    // === 左手重型塔盾（更精致的盾牌设计）===
+    ctx.save()
+    ctx.translate(-size*0.35, -size*0.1)
+    
+    // 盾牌主体（圆角矩形）
+    ctx.fillStyle = this.createGradient(ctx, '#C0C0C0', '#888888', 0, 0, 0, size*0.4)
+    this.drawRoundedRect(ctx, 0, 0, size*0.15, size*0.4, size*0.03)
+    
+    // 盾牌边框
+    ctx.strokeStyle = '#FF4444'
+    ctx.lineWidth = 3
+    ctx.strokeRect(-2, -2, size*0.15 + 4, size*0.4 + 4)
+    
+    // 护盾能量徽记（更精致的圆形徽记）
+    ctx.strokeStyle = '#00B7FF'
+    ctx.lineWidth = 2
+    ctx.shadowColor = '#00B7FF'
+    ctx.shadowBlur = 4
+    ctx.beginPath()
+    ctx.arc(size*0.075, size*0.1, size*0.06, 0, Math.PI * 2)
+    ctx.stroke()
+    ctx.shadowBlur = 0
+    
+    // 内部能量核心
+    ctx.fillStyle = '#00B7FF'
+    ctx.shadowColor = '#00B7FF'
+    ctx.shadowBlur = 3
+    ctx.beginPath()
+    ctx.arc(size*0.075, size*0.1, 4, 0, Math.PI * 2)
+    ctx.fill()
+    ctx.shadowBlur = 0
+    
+    ctx.restore()
+
+    // === 背部推进器（更精致的推进器）===
+    ctx.fillStyle = '#333333'
+    ctx.fillRect(-size*0.15, size*0.3, size*0.3, size*0.15)
+    
+    // 推进器喷口
+    const thrustPulse = Math.sin(this.animationTime / 200) * 0.3 + 0.7
+    for (let x of [-size*0.08, size*0.08]) {
+      ctx.fillStyle = this.createGradient(ctx, '#00AAFF', '#0066AA', x, size*0.45, x, size*0.55)
+      ctx.beginPath()
+      ctx.ellipse(x, size*0.5, 6, 8 * thrustPulse, 0, 0, Math.PI * 2)
+      ctx.fill()
+      
+      // 推进器核心
+      ctx.fillStyle = '#FFFFFF'
+      ctx.shadowColor = '#00AAFF'
+      ctx.shadowBlur = 4
+      ctx.beginPath()
+      ctx.arc(x, size*0.5, 3, 0, Math.PI * 2)
+      ctx.fill()
+      ctx.shadowBlur = 0
+    }
+
+    // 装甲细节（更精致的铆钉）
+    ctx.fillStyle = '#666666'
+    for (let x of [-size*0.2, size*0.2]) {
+      for (let y of [-size*0.3, 0, size*0.25]) {
+        ctx.beginPath()
+        ctx.arc(x, y, 2, 0, Math.PI * 2)
+        ctx.fill()
+      }
+    }
+
+    ctx.restore()
+  }
+
+  private drawHiveMotherBoss(ctx: CanvasRenderingContext2D, options: EnemyRenderOptions) {
+    const size = options.size * 2.0 // 虫巢母体：巨大但紧凑
+    const pulse = Math.sin(this.animationTime / 500) * 2
+    ctx.save()
+    ctx.translate(0, pulse)
+
+    // === 主体：巨大虫巢（椭圆形，类似蜂巢）===
+    // 外层深紫几丁质壳
+    ctx.fillStyle = '#4B0082'
+    ctx.beginPath(); ctx.ellipse(0, 0, size*0.45, size*0.55, 0, 0, Math.PI*2); ctx.fill()
+    
+    // 内层高光（顶部）
+    ctx.fillStyle = '#6B00A8'
+    ctx.beginPath(); ctx.ellipse(0, -size*0.15, size*0.42, size*0.25, 0, 0, Math.PI*2); ctx.fill()
+    
+    // 虫巢纹理（六边形蜂窝结构暗示）
+    ctx.strokeStyle = '#2E0055'
+    ctx.lineWidth = 2
+    for (let i=0;i<3;i++) {
+      for (let j=0;j<4;j++) {
+        const hexX = -size*0.3 + i*size*0.3
+        const hexY = -size*0.3 + j*size*0.2
+        ctx.beginPath()
+        ctx.arc(hexX, hexY, 8, 0, Math.PI*2)
+        ctx.stroke()
+      }
+    }
+
+    // === 半透明腹部（可见虫卵流动）===
+    ctx.globalAlpha = 0.35
+    const flow = Math.sin(this.animationTime / 400)
+    ctx.fillStyle = '#39FF14'
+    ctx.beginPath(); ctx.ellipse(0, size*0.1, size*0.38, size*0.35 + flow*3, 0, 0, Math.PI*2); ctx.fill()
+    ctx.globalAlpha = 1
+    
+    // 虫卵（发光绿色，在腹部流动）
+    ctx.fillStyle = '#39FF14'
+    ctx.shadowColor = '#39FF14'
+    ctx.shadowBlur = 8
+    for (let i=0;i<9;i++) { 
+      const phase = (i/9)*Math.PI*2 + this.animationTime/600
+      const eggX = Math.cos(phase)*size*0.25
+      const eggY = size*0.1 + Math.sin(phase)*size*0.15 + flow*5
+      ctx.beginPath(); ctx.arc(eggX, eggY, 5, 0, Math.PI*2); ctx.fill() 
+    }
+    ctx.shadowBlur = 0
+
+    // === 头部：简化口器（小开口）===
+    ctx.fillStyle = '#2E0033'
+    ctx.beginPath(); ctx.arc(0, -size*0.5, size*0.12, 0, Math.PI*2); ctx.fill()
+    // 黏液滴
+    ctx.fillStyle = 'rgba(57,255,20,0.7)'
+    for (let i=0;i<2;i++) {
+      const dropY = -size*0.35 + i*12 + flow*8
+      ctx.beginPath(); ctx.arc(0, dropY, 3, 0, Math.PI*2); ctx.fill()
+    }
+
+    // === 复眼（6只，紧凑排列在头部）===
+    ctx.fillStyle = '#39FF14'
+    ctx.shadowColor = '#39FF14'
+    ctx.shadowBlur = 6
+    for (let i=0;i<6;i++){ 
+      const ex = -size*0.15 + i*(size*0.06)
+      const ey = -size*0.52
+      ctx.beginPath(); ctx.arc(ex, ey, 4, 0, Math.PI*2); ctx.fill() 
+    }
+    ctx.shadowBlur = 0
+
+    // === 3个虫巢出口管道（腹部下方，明显可见）===
+    ctx.fillStyle = '#3A0059'
+    ctx.strokeStyle = '#2E0055'
+    ctx.lineWidth = 2
+    for (let i=0;i<3;i++){ 
+      const px = -size*0.28 + i*size*0.28
+      const py = size*0.35
+      // 管道（向下延伸）
+      ctx.fillRect(px-10, py, 20, size*0.18)
+      ctx.strokeRect(px-10, py, 20, size*0.18)
+      // 管道口（发光，间歇性产出）
+      const spawnActive = Math.sin(this.animationTime/500 + i*2) > 0.5
+      if (spawnActive) {
+        ctx.fillStyle = 'rgba(57,255,20,0.8)'
+        ctx.shadowColor = '#39FF14'
+        ctx.shadowBlur = 10
+        ctx.beginPath(); ctx.arc(px, py+size*0.2, 6, 0, Math.PI*2); ctx.fill()
+        ctx.shadowBlur = 0
+      }
+      ctx.fillStyle = '#3A0059'
+    }
+
+    // === 节肢足（6只，从身体两侧伸出，支撑虫巢）===
+    ctx.strokeStyle = '#4B0082'
+    ctx.lineWidth = 4
+    for (let i=0;i<6;i++) {
+      const legAngle = (i/6)*Math.PI*2
+      const legStartX = Math.cos(legAngle)*size*0.4
+      const legStartY = Math.sin(legAngle)*size*0.45
+      const legEndX = legStartX + Math.cos(legAngle + Math.PI/6)*size*0.2
+      const legEndY = legStartY + Math.sin(legAngle + Math.PI/6)*size*0.2
+      ctx.beginPath()
+      ctx.moveTo(legStartX, legStartY)
+      ctx.lineTo(legEndX, legEndY)
+      ctx.stroke()
+    }
+
+    ctx.restore()
+  }
+
+  private drawShadowAssassinBoss(ctx: CanvasRenderingContext2D, options: EnemyRenderOptions) {
+    const size = options.size * 1.8 // 修长人形，高度3倍
+    const stealth = 0.55 + Math.sin(this.animationTime / 220) * 0.25 // 隐身半透明
+    const lean = Math.sin(this.animationTime / 500) * 0.15 // 弯腰突袭姿态
+    ctx.save()
+    ctx.globalAlpha = stealth
+    ctx.rotate(lean) // 侧身减少被攻击面积
+
+    // === 修长人形身体（纯黑）===
+    ctx.fillStyle = '#000000'
+    // 躯干
+    ctx.fillRect(-size*0.08, -size*0.4, size*0.16, size*0.6)
+    // 头部
+    ctx.fillRect(-size*0.1, -size*0.48, size*0.2, size*0.15)
+    // 左臂（前伸持刀）
+    ctx.fillRect(-size*0.18, -size*0.15, size*0.12, size*0.35)
+    // 右臂（后收持刀）
+    ctx.fillRect(size*0.06, -size*0.1, size*0.12, size*0.3)
+    // 左腿
+    ctx.fillRect(-size*0.1, size*0.2, size*0.08, size*0.35)
+    // 右腿
+    ctx.fillRect(size*0.02, size*0.25, size*0.08, size*0.3)
+
+    // === 白色面具（无表情）===
+    ctx.fillStyle = '#FFFFFF'
+    ctx.fillRect(-size*0.08, -size*0.46, size*0.16, size*0.12)
+    // 只露红眼（发光）
+    ctx.fillStyle = '#8B0000'
+    ctx.shadowColor = '#8B0000'
+    ctx.shadowBlur = 6
+    ctx.beginPath(); ctx.arc(-size*0.03, -size*0.4, 3, 0, Math.PI*2); ctx.fill()
+    ctx.beginPath(); ctx.arc(size*0.03, -size*0.4, 3, 0, Math.PI*2); ctx.fill()
+    ctx.shadowBlur = 0
+
+    // === 动态披风（边缘粒子化消散）===
+    ctx.fillStyle = 'rgba(0,0,0,0.8)'
+    ctx.beginPath()
+    ctx.moveTo(-size*0.12, -size*0.25)
+    ctx.lineTo(-size*0.3, size*0.05)
+    ctx.lineTo(-size*0.2, size*0.4)
+    ctx.lineTo(size*0.2, size*0.4)
+    ctx.lineTo(size*0.3, size*0.05)
+    ctx.lineTo(size*0.12, -size*0.25)
+    ctx.closePath()
+    ctx.fill()
+    // 披风边缘粒子（暗紫色，逐渐消散）
+    ctx.fillStyle = 'rgba(75,0,130,0.5)'
+    for (let i=0;i<10;i++) {
+      const px = -size*0.25 + (i/10)*size*0.5
+      const py = size*0.35 + Math.sin(this.animationTime/200 + i)*3
+      ctx.fillRect(px-1, py, 2, 2)
+    }
+
+    // === 双匕首（暗影匕首，红色刀刃高光）===
+    // 左匕首（前伸）
+    ctx.strokeStyle = '#000000'
+    ctx.lineWidth = 2
+    ctx.beginPath()
+    ctx.moveTo(-size*0.22, size*0.05)
+    ctx.lineTo(-size*0.38, size*0.2)
+    ctx.stroke()
+    // 红色刀刃
+    ctx.strokeStyle = '#8B0000'
+    ctx.lineWidth = 3
+    ctx.shadowColor = '#8B0000'
+    ctx.shadowBlur = 4
+    ctx.beginPath()
+    ctx.moveTo(-size*0.24, size*0.08)
+    ctx.lineTo(-size*0.4, size*0.22)
+    ctx.stroke()
+    // 右匕首（后收）
+    ctx.beginPath()
+    ctx.moveTo(size*0.16, size*0.08)
+    ctx.lineTo(size*0.32, size*0.18)
+    ctx.stroke()
+    ctx.shadowBlur = 0
+
+    // === 残影效果（2-3帧）===
+    ctx.globalAlpha = 0.2
+    for (let i=1;i<=3;i++) {
+      const offset = -i*6
+      ctx.fillStyle = '#000000'
+      ctx.fillRect(offset-size*0.08, -size*0.4, size*0.16, size*0.6)
+      ctx.fillRect(offset-size*0.1, -size*0.48, size*0.2, size*0.15)
+    }
+    ctx.globalAlpha = stealth
+
+    // === 暗影粒子围绕身体飘散 ===
+    ctx.fillStyle = 'rgba(75,0,130,0.6)'
+    for (let i=0;i<8;i++) {
+      const angle = (i/8)*Math.PI*2 + this.animationTime/300
+      const dist = size*0.25 + Math.sin(this.animationTime/200 + i)*5
+      const px = Math.cos(angle)*dist
+      const py = Math.sin(angle)*dist*0.5
+      ctx.beginPath(); ctx.arc(px, py, 2, 0, Math.PI*2); ctx.fill()
+    }
+
+    ctx.restore()
+  }
+
+  private drawChaosConstructBoss(ctx: CanvasRenderingContext2D, options: EnemyRenderOptions) {
+    const size = options.size * 2.3
+    ctx.save()
+
+    // 基于 phase 的三阶段外形（根据血量：100-70%阶段1，70-30%阶段2，30-0%阶段3）
+    const healthPercent = options.health / options.maxHealth
+    let phase = 1
+    if (healthPercent <= 0.3) phase = 3
+    else if (healthPercent <= 0.7) phase = 2
+
+    if (phase === 1) {
+      // === 阶段一：混沌巨兽（四足石像鬼）===
+      const breathe = Math.sin(this.animationTime / 400) * 3
+      ctx.translate(0, breathe)
+      
+      // 花岗岩灰主体（类似石像鬼）
+      ctx.fillStyle = '#696969'
+      // 身体（粗壮）
+      ctx.fillRect(-size*0.3, -size*0.2, size*0.6, size*0.5)
+      // 前肢
+      ctx.fillRect(-size*0.4, size*0.1, size*0.2, size*0.4)
+      ctx.fillRect(size*0.2, size*0.1, size*0.2, size*0.4)
+      // 后肢
+      ctx.fillRect(-size*0.35, size*0.25, size*0.18, size*0.35)
+      ctx.fillRect(size*0.17, size*0.25, size*0.18, size*0.35)
+      
+      // 头部（尖角）
+      ctx.fillRect(-size*0.2, -size*0.4, size*0.4, size*0.25)
+      // 尖角
+      ctx.beginPath()
+      ctx.moveTo(0, -size*0.5)
+      ctx.lineTo(-size*0.15, -size*0.4)
+      ctx.lineTo(size*0.15, -size*0.4)
+      ctx.closePath()
+      ctx.fill()
+      
+      // 熔岩裂纹（橙红色，随攻击闪烁）
+      const crackBright = Math.sin(this.animationTime / 300) * 0.3 + 0.7
+      ctx.strokeStyle = `rgba(255, 69, 0, ${crackBright})`
+      ctx.lineWidth = 3
+      ctx.shadowColor = '#FF4500'
+      ctx.shadowBlur = 6
+      // 裂纹路径
+      ctx.beginPath()
+      ctx.moveTo(-size*0.25, -size*0.15)
+      ctx.lineTo(-size*0.15, size*0.1)
+      ctx.lineTo(size*0.1, size*0.15)
+      ctx.lineTo(size*0.2, -size*0.1)
+      ctx.stroke()
+      ctx.shadowBlur = 0
+      
+      // 眼睛（红色）
+      ctx.fillStyle = '#FF0000'
+      ctx.beginPath(); ctx.arc(-size*0.08, -size*0.3, 4, 0, Math.PI*2); ctx.fill()
+      ctx.beginPath(); ctx.arc(size*0.08, -size*0.3, 4, 0, Math.PI*2); ctx.fill()
+
+    } else if (phase === 2) {
+      // === 阶段二：混沌织法者（漂浮法球）===
+      const float = Math.sin(this.animationTime / 500) * 5
+      ctx.translate(0, float)
+      
+      // 法球主体（深蓝色能量核心）
+      const coreR = size*0.25
+      const grad = ctx.createRadialGradient(0, 0, coreR*0.2, 0, 0, coreR)
+      grad.addColorStop(0, '#FFFFFF')
+      grad.addColorStop(0.4, '#00A8FF')
+      grad.addColorStop(1, '#00008B')
+      ctx.fillStyle = grad
+      ctx.shadowColor = '#00A8FF'
+      ctx.shadowBlur = 12
+      ctx.beginPath(); ctx.arc(0, 0, coreR, 0, Math.PI*2); ctx.fill()
+      ctx.shadowBlur = 0
+      
+      // 旋转的符文环（2层）
+      const rotAngle = this.animationTime / 600
+      ctx.strokeStyle = '#00A8FF'
+      ctx.lineWidth = 3
+      ctx.shadowColor = '#00A8FF'
+      ctx.shadowBlur = 4
+      for (let i=1;i<=2;i++) {
+        ctx.save()
+        ctx.rotate(rotAngle * i)
+        const r = coreR + i*15
+        ctx.beginPath(); ctx.arc(0, 0, r, 0, Math.PI*2); ctx.stroke()
+        // 符文标记（4个）
+        for (let j=0;j<4;j++) {
+          const ang = (j/4)*Math.PI*2
+          ctx.fillStyle = '#FFFFFF'
+          ctx.beginPath(); ctx.arc(Math.cos(ang)*r, Math.sin(ang)*r, 4, 0, Math.PI*2); ctx.fill()
+        }
+        ctx.restore()
+      }
+      ctx.shadowBlur = 0
+      
+      // 电弧效果（随机闪烁）
+      if (Math.sin(this.animationTime / 200) > 0.7) {
+        ctx.strokeStyle = '#FFFFFF'
+        ctx.lineWidth = 2
+        for (let i=0;i<3;i++) {
+          const ang = Math.random()*Math.PI*2
+          ctx.beginPath()
+          ctx.moveTo(Math.cos(ang)*coreR, Math.sin(ang)*coreR)
+          ctx.lineTo(Math.cos(ang)*(coreR+30), Math.sin(ang)*(coreR+30))
+          ctx.stroke()
+        }
+      }
+
+    } else {
+      // === 阶段三：混沌本源（几何能量体）===
+      // 彩虹色渐变（每秒循环变化）
+      const t = (this.animationTime/1000) % 1
+      const hue = Math.floor(t * 360)
+      const colors = ['#FF0000','#FF8800','#FFFF00','#00FF00','#00FFFF','#0088FF','#8800FF','#FF00FF']
+      const colorIdx = Math.floor(t * colors.length) % colors.length
+      
+      ctx.globalAlpha = 0.95
+      // 多层同心圆（不断变形）
+      for (let i=0;i<8;i++){
+        const baseR = size*0.08 + i*5
+        const morph = Math.sin(this.animationTime/300 + i)*3
+        const r = baseR + morph
+        const color = colors[(colorIdx + i) % colors.length]
+        ctx.fillStyle = color
+        ctx.shadowColor = color
+        ctx.shadowBlur = 8
+        ctx.beginPath(); ctx.arc(0, 0, r, 0, Math.PI*2); ctx.fill()
+      }
+      ctx.shadowBlur = 0
+      ctx.globalAlpha = 1
+      
+      // 中心星形核心
+      ctx.fillStyle = '#FFFFFF'
+      ctx.shadowColor = '#FFFFFF'
+      ctx.shadowBlur = 12
+      ctx.beginPath()
+      for (let i=0;i<8;i++) {
+        const ang = (i/8)*Math.PI*2
+        const r = size*0.06 + Math.sin(this.animationTime/200 + i)*2
+        const x = Math.cos(ang)*r
+        const y = Math.sin(ang)*r
+        if (i===0) ctx.moveTo(x, y)
+        else ctx.lineTo(x, y)
+      }
+      ctx.closePath()
+      ctx.fill()
+      ctx.shadowBlur = 0
+    }
 
     ctx.restore()
   }
@@ -2257,6 +2848,12 @@ export class EnemyVisualSystem {
     if (healthPercent <= 0.5) healthColor = '#ffff00'
     if (healthPercent <= 0.25) healthColor = '#ff0000'
     
+    // Boss主题色加成
+    if (options.type === 'infantry_captain') healthColor = '#FF4444'
+    if (options.type === 'fortress_guard') healthColor = '#39FF14'
+    if (options.type === 'void_shaman') healthColor = '#8B0000'
+    if (options.type === 'legion_commander') healthColor = '#7F00FF'
+
     ctx.fillStyle = healthColor
     ctx.fillRect(-barWidth/2, yOffset, barWidth * healthPercent, barHeight)
     
@@ -2267,8 +2864,8 @@ export class EnemyVisualSystem {
       ctx.fillRect(-barWidth/2, yOffset - 6, barWidth * shieldPercent, barHeight)
     }
     
-    // 精英标记
-    if (options.isElite) {
+    // 精英标记（第5关Boss不显示五角星）
+    if (options.isElite && options.type !== 'infantry_captain') {
       ctx.font = 'bold 12px Arial'
       ctx.fillStyle = '#FFD700'
       ctx.textAlign = 'center'

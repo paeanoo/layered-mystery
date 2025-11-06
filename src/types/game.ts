@@ -230,13 +230,29 @@ export interface EnemyAbility {
   lastUsed: number
 }
 
-// 掉落物品
+// 掉落物品配置（用于敌人配置）
 export interface DropItem {
   id: string
   type: 'experience' | 'health' | 'energy' | 'item'
   value: number
   chance: number
   icon: string
+}
+
+// 掉落物实体（游戏中的实际掉落物）
+export interface DroppedItem {
+  id: string
+  x: number
+  y: number
+  vx: number // 水平速度
+  vy: number // 垂直速度
+  type: 'heal_orb' | 'experience' | 'energy' | 'item'
+  value: number // 数值（如治疗量、经验值）
+  size: number // 大小
+  life: number // 生命周期（剩余时间）
+  maxLife: number // 最大生命周期
+  magnetRange?: number // 磁吸范围（如果玩家有自动拾取）
+  attractedToPlayer?: boolean // 是否被玩家吸引
 }
 
 // 投射物
@@ -263,6 +279,7 @@ export interface GameState {
   score: number
   seasonSeed: string
   enemiesDefeated?: number
+  bossDefeated?: number // Boss被击败的层数
 }
 
 // 关卡配置
@@ -275,16 +292,6 @@ export interface LevelConfig {
   isBossLevel: boolean
 }
 
-// 赛季配置
-export interface SeasonConfig {
-  id: string
-  name: string
-  startDate: string
-  endDate: string
-  theme: string
-  seed: string
-  isActive: boolean
-}
 
 // 排行榜条目
 export interface LeaderboardEntry {
@@ -294,7 +301,6 @@ export interface LeaderboardEntry {
   level: number
   time: number
   build: string[]
-  seasonId: string
   rank: number
 }
 

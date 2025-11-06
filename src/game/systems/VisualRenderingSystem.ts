@@ -36,6 +36,19 @@ export interface ParticleConfig {
 export class VisualRenderingSystem {
   private animationTime = 0
   private particleEffects: Map<string, any[]> = new Map()
+  private telegraphs: Array<{
+    type: 'circle' | 'cone' | 'line'
+    x: number
+    y: number
+    radius?: number
+    startAngle?: number
+    endAngle?: number
+    length?: number
+    angle?: number
+    color: string
+    createdAt: number
+    duration: number
+  }> = []
 
   constructor() {
     this.initializeParticleSystems()
@@ -44,6 +57,9 @@ export class VisualRenderingSystem {
   update(deltaTime: number) {
     this.animationTime += deltaTime
     this.updateParticles(deltaTime)
+    // 清理过期预警
+    const now = Date.now()
+    this.telegraphs = this.telegraphs.filter(t => now - t.createdAt < t.duration)
   }
 
   // 更新玩家属性（用于测试功能）
@@ -59,6 +75,82 @@ export class VisualRenderingSystem {
     this.particleEffects.set('magic', [])
     this.particleEffects.set('explosion', [])
     this.particleEffects.set('smoke', [])
+  }
+
+  // === 技能预警 API ===
+  addTelegraphCircle(x: number, y: number, radius: number, duration: number, color = 'rgba(255,0,0,0.6)') {
+    this.telegraphs.push({ type: 'circle', x, y, radius, color, createdAt: Date.now(), duration })
+  }
+
+  addTelegraphCone(x: number, y: number, startAngle: number, endAngle: number, radius: number, duration: number, color = 'rgba(255,80,0,0.5)') {
+    this.telegraphs.push({ type: 'cone', x, y, startAngle, endAngle, radius, color, createdAt: Date.now(), duration })
+  }
+
+  addTelegraphLine(x: number, y: number, angle: number, length: number, duration: number, color = 'rgba(255,0,0,0.6)') {
+    this.telegraphs.push({ type: 'line', x, y, angle, length, color, createdAt: Date.now(), duration })
+  }
+
+  drawTelegraphs(ctx: CanvasRenderingContext2D) {
+    const now = Date.now()
+    this.telegraphs.forEach(t => {
+      const elapsed = now - t.createdAt
+      const remain = Math.max(0, t.duration - elapsed)
+      const alpha = Math.max(0.2, remain / t.duration) // 越接近结束越亮
+      ctx.save()
+      switch (t.type) {
+        case 'circle': {
+          if (!t.radius) { ctx.restore(); return }
+          ctx.strokeStyle = this.applyAlpha(t.color, alpha)
+          ctx.lineWidth = 3
+          ctx.beginPath()
+          ctx.arc(t.x, t.y, t.radius, 0, Math.PI * 2)
+          ctx.stroke()
+          // 填充淡色
+          ctx.fillStyle = this.applyAlpha(t.color, alpha * 0.2)
+          ctx.beginPath()
+          ctx.arc(t.x, t.y, t.radius, 0, Math.PI * 2)
+          ctx.fill()
+          break
+        }
+        case 'cone': {
+          if (t.startAngle === undefined || t.endAngle === undefined || !t.radius) { ctx.restore(); return }
+          ctx.fillStyle = this.applyAlpha(t.color, alpha * 0.3)
+          ctx.beginPath()
+          ctx.moveTo(t.x, t.y)
+          ctx.arc(t.x, t.y, t.radius, t.startAngle, t.endAngle)
+          ctx.closePath()
+          ctx.fill()
+          ctx.strokeStyle = this.applyAlpha(t.color, alpha)
+          ctx.lineWidth = 2
+          ctx.stroke()
+          break
+        }
+        case 'line': {
+          if (t.angle === undefined || !t.length) { ctx.restore(); return }
+          ctx.strokeStyle = this.applyAlpha(t.color, alpha)
+          ctx.lineWidth = 4
+          ctx.beginPath()
+          ctx.moveTo(t.x, t.y)
+          ctx.lineTo(t.x + Math.cos(t.angle) * t.length, t.y + Math.sin(t.angle) * t.length)
+          ctx.stroke()
+          break
+        }
+      }
+      ctx.restore()
+    })
+  }
+
+  private applyAlpha(color: string, alpha: number): string {
+    // 支持 rgba 已带透明度的简单处理：用全局alpha叠加
+    if (color.startsWith('rgba')) return color
+    if (color.startsWith('#')) {
+      // 简单转换为 rgba
+      const r = parseInt(color.slice(1, 3), 16)
+      const g = parseInt(color.slice(3, 5), 16)
+      const b = parseInt(color.slice(5, 7), 16)
+      return `rgba(${r}, ${g}, ${b}, ${alpha})`
+    }
+    return color
   }
 
   private updateParticles(deltaTime: number) {

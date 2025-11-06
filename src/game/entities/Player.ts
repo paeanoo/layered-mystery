@@ -239,28 +239,11 @@ export class Player {
     return synergies
   }
 
-  // 应用协同效果
+  // 应用协同效果（已移除，协同效果不应该每帧修改属性值）
+  // 如果需要协同效果，应该在属性计算时临时应用，而不是永久修改基础值
   applySynergies() {
-    const synergies = this.calculateSynergies()
-
-    synergies.forEach(synergy => {
-      switch (synergy) {
-        case 'projectile_pierce_synergy':
-          // 投射物+穿透：降低攻击间隔惩罚
-          this.state.attackSpeed *= 1.1
-          break
-        case 'crit_speed_synergy':
-          // 暴击+攻速：暴击时重置攻击间隔
-          this.state.critChance *= 1.2
-          break
-        case 'regen_lifesteal_synergy':
-          // 回复+偷取：低血量时偷取效率提升
-          if (this.state.health / this.state.maxHealth < 0.3) {
-            this.state.lifesteal *= 1.5
-          }
-          break
-      }
-    })
+    // 协同效果已移除每帧累乘的逻辑
+    // 这些效果应该在需要时临时计算，而不是修改基础属性值
   }
 
   // 添加状态效果
@@ -306,12 +289,9 @@ export class Player {
       case 'regeneration':
         this.heal(effect.intensity * deltaTime / 1000)
         break
-      case 'speed_boost':
-        this.state.moveSpeed *= (1 + effect.intensity)
-        break
-      case 'damage_boost':
-        this.state.damage *= (1 + effect.intensity)
-        break
+      // 注意：speed_boost 和 damage_boost 不应该每帧累乘
+      // 这些效果应该在应用时一次性计算，或者在获取属性时临时计算
+      // 暂时移除每帧累乘的逻辑，避免数值无限增长
     }
   }
 
@@ -436,7 +416,8 @@ export class Player {
     // 更新动画
     this.updateAnimation(deltaTime)
 
-    // 应用协同效果
-    this.applySynergies()
+    // 注意：协同效果不应该每帧应用累乘，这会导致数值无限增长
+    // 如果需要协同效果，应该在属性计算时临时应用，而不是永久修改基础值
+    // this.applySynergies()
   }
 }

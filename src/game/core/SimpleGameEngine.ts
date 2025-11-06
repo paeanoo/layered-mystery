@@ -1,5 +1,8 @@
 import type { GameState } from '../../types/game'
 
+type Enemy = { x: number; y: number; size: number; color: string; health: number; maxHealth: number }
+type Projectile = { x: number; y: number; vx: number; vy: number; damage: number }
+
 export class SimpleGameEngine {
   private canvas: HTMLCanvasElement
   private ctx: CanvasRenderingContext2D
@@ -9,10 +12,10 @@ export class SimpleGameEngine {
   private keys: Set<string> = new Set()
   private playerX = 400
   private playerY = 300
-  private enemies: Array<{ x: number; y: number; size: number; color: string; health: number; maxHealth: number }> = []
+  private enemies: Enemy[] = []
   private enemySpawnTimer = 0
   private attackTimer = 0
-  private projectiles: Array<{ x: number; y: number; vx: number; vy: number; damage: number }> = []
+  private projectiles: Projectile[] = []
 
   constructor(canvas: HTMLCanvasElement, gameState: GameState) {
     this.canvas = canvas
@@ -65,7 +68,7 @@ export class SimpleGameEngine {
     this.resizeCanvas()
     console.log('Canvas尺寸:', this.canvas.width, this.canvas.height)
     console.log('Canvas上下文:', this.ctx)
-    this.gameLoop()
+    this.gameLoop(performance.now())
   }
 
   stop() {
@@ -186,7 +189,8 @@ export class SimpleGameEngine {
 
   private createEnemy() {
     const side = Math.floor(Math.random() * 4)
-    let x, y
+    let x = 0
+    let y = 0
 
     switch (side) {
       case 0: // 上
@@ -204,6 +208,10 @@ export class SimpleGameEngine {
       case 3: // 左
         x = -20
         y = Math.random() * this.canvas.height
+        break
+      default:
+        x = Math.random() * this.canvas.width
+        y = -20
         break
     }
 
@@ -284,7 +292,7 @@ export class SimpleGameEngine {
 
   private createProjectiles() {
     // 找到最近的敌人
-    let nearestEnemy = null
+    let nearestEnemy: Enemy | null = null
     let nearestDistance = Infinity
 
     this.enemies.forEach(enemy => {
@@ -297,24 +305,28 @@ export class SimpleGameEngine {
       }
     })
 
-    if (nearestEnemy) {
-      const dx = nearestEnemy.x - this.playerX
-      const dy = nearestEnemy.y - this.playerY
-      const distance = Math.sqrt(dx * dx + dy * dy)
+    if (!nearestEnemy) {
+      return
+    }
 
-      if (distance > 0) {
-        const speed = 300 // 像素/秒
-        const vx = (dx / distance) * speed
-        const vy = (dy / distance) * speed
+    // TypeScript 类型收缩辅助
+    const enemy = nearestEnemy as Enemy
+    const dx = enemy.x - this.playerX
+    const dy = enemy.y - this.playerY
+    const distance = Math.sqrt(dx * dx + dy * dy)
 
-        this.projectiles.push({
-          x: this.playerX,
-          y: this.playerY,
-          vx,
-          vy,
-          damage: this.gameState.player.damage
-        })
-      }
+    if (distance > 0) {
+      const speed = 300 // 像素/秒
+      const vx = (dx / distance) * speed
+      const vy = (dy / distance) * speed
+
+      this.projectiles.push({
+        x: this.playerX,
+        y: this.playerY,
+        vx,
+        vy,
+        damage: this.gameState.player.damage
+      })
     }
   }
 
