@@ -136,18 +136,109 @@ export class GameEngine {
   }
 
   private updateProjectiles(deltaTime: number) {
-    this.gameState.projectiles.forEach(projectile => {
+    // 线段-圆碰撞检测，避免高速投射物穿透
+    const segmentIntersectsCircle = (
+      x1: number, y1: number,
+      x2: number, y2: number,
+      cx: number, cy: number,
+      r: number
+    ): boolean => {
+      const dx = x2 - x1
+      const dy = y2 - y1
+      const fx = x1 - cx
+      const fy = y1 - cy
+
+      const a = dx * dx + dy * dy
+      if (a === 0) {
+        // 静止时退化为点-圆
+        return (fx * fx + fy * fy) <= r * r
+      }
+
+      // 最近点投影参数t并夹到[0,1]
+      let t = - (fx * dx + fy * dy) / a
+      t = Math.max(0, Math.min(1, t))
+
+      const closestX = x1 + t * dx
+      const closestY = y1 + t * dy
+      const ddx = closestX - cx
+      const ddy = closestY - cy
+      return (ddx * ddx + ddy * ddy) <= r * r
+    }
+
+    const updatedProjectiles: Projectile[] = []
+
+    for (let pIndex = 0; pIndex < this.gameState.projectiles.length; pIndex++) {
+      const projectile = this.gameState.projectiles[pIndex]
+
+      const prevX = projectile.position.x
+      const prevY = projectile.position.y
+
+      // 更新位置
       projectile.position.x += projectile.velocity.x * deltaTime / 1000
       projectile.position.y += projectile.velocity.y * deltaTime / 1000
-    })
 
-    // 移除超出边界的投射物
-    this.gameState.projectiles = this.gameState.projectiles.filter(projectile => {
-      return projectile.position.x >= 0 && 
-             projectile.position.x <= this.canvas.width &&
-             projectile.position.y >= 0 && 
-             projectile.position.y <= this.canvas.height
-    })
+      // 超界直接丢弃
+      if (
+        projectile.position.x < 0 ||
+        projectile.position.x > this.canvas.width ||
+        projectile.position.y < 0 ||
+        projectile.position.y > this.canvas.height
+      ) {
+        continue
+      }
+
+      let removedThisProjectile = false
+
+      // 与敌人进行线段-圆碰撞检测（使用敌人半径 + 投射物半径）
+      for (let enemyIndex = 0; enemyIndex < this.gameState.enemies.length; enemyIndex++) {
+        const enemy = this.gameState.enemies[enemyIndex]
+        const hit = segmentIntersectsCircle(
+          prevX, prevY,
+          projectile.position.x, projectile.position.y,
+          enemy.position.x, enemy.position.y,
+          enemy.size + projectile.size
+        )
+
+        if (hit) {
+          // 造成伤害
+          enemy.health -= projectile.damage
+
+          // 生命偷取
+          if (this.gameState.player.lifesteal > 0) {
+            const healAmount = projectile.damage * this.gameState.player.lifesteal
+            this.gameState.player.health = Math.min(
+              this.gameState.player.maxHealth,
+              this.gameState.player.health + healAmount
+            )
+          }
+
+          // 穿透计数
+          projectile.pierce++
+          if (projectile.pierce > projectile.maxPierce) {
+            removedThisProjectile = true
+          }
+
+          // 敌人死亡判定与加分
+          if (enemy.health <= 0) {
+            this.gameState.enemies.splice(enemyIndex, 1)
+            this.gameState.score += 10 + this.gameState.level * 5
+            // 敌人数组改变，索引后移一步
+            enemyIndex--
+          }
+
+          // 如果投射物已到达最大穿透，停止继续检测
+          if (removedThisProjectile) {
+            break
+          }
+        }
+      }
+
+      if (!removedThisProjectile) {
+        updatedProjectiles.push(projectile)
+      }
+    }
+
+    this.gameState.projectiles = updatedProjectiles
   }
 
   private spawnEnemies(deltaTime: number) {
@@ -295,37 +386,7 @@ export class GameEngine {
   }
 
   private checkCollisions() {
-    // 投射物与敌人碰撞
-    this.gameState.projectiles.forEach(projectile => {
-      this.gameState.enemies.forEach((enemy, enemyIndex) => {
-        const distance = this.getDistance(projectile.position, enemy.position)
-        if (distance < projectile.size + enemy.size) {
-          // 造成伤害
-          enemy.health -= projectile.damage
-          
-          // 生命偷取
-          if (this.gameState.player.lifesteal > 0) {
-            const healAmount = projectile.damage * this.gameState.player.lifesteal
-            this.gameState.player.health = Math.min(
-              this.gameState.player.maxHealth,
-              this.gameState.player.health + healAmount
-            )
-          }
-
-          // 减少穿透
-          projectile.pierce++
-          if (projectile.pierce > projectile.maxPierce) {
-            this.gameState.projectiles = this.gameState.projectiles.filter(p => p.id !== projectile.id)
-          }
-
-          // 移除死亡的敌人
-          if (enemy.health <= 0) {
-            this.gameState.enemies.splice(enemyIndex, 1)
-            this.gameState.score += 10 + this.gameState.level * 5
-          }
-        }
-      })
-    })
+    // 投射物与敌人的碰撞已在 updateProjectiles 中用线段-圆检测处理，避免重复结算
 
     // 敌人与玩家碰撞
     this.gameState.enemies.forEach(enemy => {

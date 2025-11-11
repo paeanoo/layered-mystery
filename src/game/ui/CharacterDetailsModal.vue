@@ -127,6 +127,15 @@ import { PASSIVE_ATTRIBUTES } from '../../types/game'
 import { ATTRIBUTE_REWARDS, SPECIAL_REWARDS, LEGENDARY_REWARDS } from '../../types/reward'
 import type { RewardOption } from '../../types/reward'
 
+// **修复**：获取所有奖励（包括属性奖励、特殊奖励、传说奖励）
+const getAllRewards = () => {
+  return [
+    ...ATTRIBUTE_REWARDS,  // 绿色品质 - 属性奖励
+    ...SPECIAL_REWARDS,    // 蓝色品质 - 特殊效果
+    ...LEGENDARY_REWARDS   // 金色品质 - 传说奖励
+  ]
+}
+
 interface PlayerStats {
   level: number
   score: number
@@ -157,26 +166,16 @@ interface Props {
 
 const props = defineProps<Props>()
 
-// 获取已获得的奖励列表（只显示非属性类奖励，不显示基础属性）
+// **修复**：获取已获得的奖励列表 - 显示所有品质的道具（包括绿色属性奖励）
 const acquiredRewards = computed(() => {
   const passiveIds = props.playerStats.passiveAttributes || []
   const rewardMap = new Map<string, { id: string; name: string; description: string; color: string; category: string; effectKey?: string; count: number; stats: Array<{ label: string; value: string }> | null }>()
   
-  // 基础被动属性的ID列表，用于过滤
-  const basePassiveIds = new Set(PASSIVE_ATTRIBUTES.map(p => p.id))
+  // **修复**：获取所有奖励（包括属性奖励、特殊奖励、传说奖励）
+  const allRewards = getAllRewards()
   
   passiveIds.forEach(passiveId => {
-    // 跳过基础被动属性（这些在属性界面已经显示了）
-    if (basePassiveIds.has(passiveId)) {
-      return
-    }
-    
-    // 仅展示“非属性”奖励（特殊+传说）
-    const allRewards = [
-      ...SPECIAL_REWARDS,
-      ...LEGENDARY_REWARDS  // Boss层专属，最高品质
-    ]
-    
+    // **修复**：查找所有类型的奖励，不再跳过任何道具
     const reward = allRewards.find(r => r.id === passiveId)
     if (reward) {
       const existing = rewardMap.get(passiveId)

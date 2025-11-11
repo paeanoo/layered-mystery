@@ -168,9 +168,9 @@ const getQualityName = (quality: 'green' | 'blue' | 'purple' | 'gold') => {
   border: 2px solid var(--accent-color);
   border-radius: 16px;
   padding: 2rem;
-  max-width: 900px;
-  width: 90%;
-  max-height: 80vh;
+  max-width: 1400px;
+  width: 95%;
+  max-height: 85vh;
   overflow-y: auto;
   box-shadow: 0 20px 60px rgba(0, 255, 136, 0.3);
 }
@@ -257,23 +257,26 @@ const getQualityName = (quality: 'green' | 'blue' | 'purple' | 'gold') => {
 
 .shop-items {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
-  gap: 1.5rem;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 1.2rem;
   margin-bottom: 2rem;
 }
+
+/* 所有层都是4个道具 */
 
 .shop-item {
   background: var(--primary-bg);
   border: 2px solid var(--border-color);
   border-radius: 12px;
-  padding: 1.5rem;
+  padding: 1.2rem;
   display: flex;
   flex-direction: column;
-  gap: 0.8rem;
+  gap: 0.6rem;
   position: relative;
   overflow: hidden;
   transition: all 0.3s ease;
-  min-height: 200px;
+  min-height: 180px;
+  max-height: 400px;
 }
 
 .shop-item::before {
@@ -400,9 +403,12 @@ const getQualityName = (quality: 'green' | 'blue' | 'purple' | 'gold') => {
 
 .item-description {
   color: var(--text-secondary);
-  font-size: 0.9rem;
+  font-size: 0.85rem;
   line-height: 1.4;
   margin: 0;
+  overflow-y: auto;
+  max-height: 80px;
+  flex-grow: 1;
 }
 
 .item-debuff {

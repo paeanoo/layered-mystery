@@ -3,7 +3,7 @@ import { ref, computed, watch } from 'vue'
 import type { GameState, PlayerState, PassiveAttribute } from '../types/game'
 import type { RewardOption } from '../types/reward'
 import { generateBossRewards, generateShopRewards, calculateShopPrice, generateShopItemByQuality, type GeneratedReward, type RewardContext } from '../utils/RewardGenerator'
-import { getTierMultiplier } from '../types/reward'
+import { getTierMultiplier, ATTRIBUTE_REWARDS } from '../types/reward'
 import { PASSIVE_ATTRIBUTES } from '../types/game'
 import { gameData } from './supabase'
 import { getSeededRandom, initSeededRandom, SeededRandom } from '../utils/SeededRandom'
@@ -81,12 +81,16 @@ export const useGameStore = defineStore('game', () => {
 
   const sanitizeShopItems = () => {
     const original = availableShopItems.value
-    const unique: Array<(GeneratedReward & { locked: boolean }) | null> = new Array(original.length).fill(null)
+    // **关键修复**：确保商店总是有4个槽位
+    const targetCount = 4
+    const unique: Array<(GeneratedReward & { locked: boolean }) | null> = new Array(Math.max(original.length, targetCount)).fill(null)
     const seen = new Map<string, number>()
 
     original.forEach((item, index) => {
       if (!item || !item.option) {
-        unique[index] = null
+        if (index < unique.length) {
+          unique[index] = null
+        }
         return
       }
 
@@ -94,17 +98,19 @@ export const useGameStore = defineStore('game', () => {
       
       // **关键修复**：锁定的道具永远不会被清除，即使有重复
       if (item.locked) {
-        unique[index] = { ...item }
-        // 如果之前已经有相同ID的道具，清除之前的（但保留锁定的）
-        if (seen.has(id)) {
-          const existingIndex = seen.get(id)!
-          const existingItem = unique[existingIndex]
-          // 如果之前的道具也锁定了，保留两个（虽然不应该发生，但安全起见）
-          if (!existingItem || !existingItem.locked) {
-            unique[existingIndex] = null
+        if (index < unique.length) {
+          unique[index] = { ...item }
+          // 如果之前已经有相同ID的道具，清除之前的（但保留锁定的）
+          if (seen.has(id)) {
+            const existingIndex = seen.get(id)!
+            const existingItem = unique[existingIndex]
+            // 如果之前的道具也锁定了，保留两个（虽然不应该发生，但安全起见）
+            if (!existingItem || !existingItem.locked) {
+              unique[existingIndex] = null
+            }
           }
+          seen.set(id, index)
         }
-        seen.set(id, index)
         return
       }
 
@@ -114,7 +120,9 @@ export const useGameStore = defineStore('game', () => {
         const existingItem = unique[existingIndex]
         // 如果已存在的道具被锁定，保留锁定的，清除当前的
         if (existingItem && existingItem.locked) {
-          unique[index] = null
+          if (index < unique.length) {
+            unique[index] = null
+          }
           return
         }
         // 如果新的道具被锁定而旧的未锁定，则用新的替换，保持锁定优先
@@ -122,13 +130,25 @@ export const useGameStore = defineStore('game', () => {
           unique[existingIndex] = { ...item }
         }
         // 重复项所在的槽位清空
-        unique[index] = null
+        if (index < unique.length) {
+          unique[index] = null
+        }
         return
       }
 
       seen.set(id, index)
-      unique[index] = { ...item }
+      if (index < unique.length) {
+        unique[index] = { ...item }
+      }
     })
+
+    // **关键修复**：确保最终数组长度始终是4
+    while (unique.length < targetCount) {
+      unique.push(null)
+    }
+    if (unique.length > targetCount) {
+      unique.splice(targetCount)
+    }
 
     availableShopItems.value = unique
   }
@@ -522,16 +542,8 @@ export const useGameStore = defineStore('game', () => {
       const nextLayer = clearedLevel + 1
       
       // 确定下一层商店应该有多少个槽位
-      let targetShopCount = 3
-      if (nextLayer >= 51) {
-        targetShopCount = 5
-      } else if (nextLayer >= 31) {
-        targetShopCount = 4
-      } else if (nextLayer >= 21) {
-        targetShopCount = 4
-      } else {
-        targetShopCount = 3
-      }
+      // 所有层都是4个
+      const targetShopCount = 4
       
       // 保留锁定的道具（除非已被购买，即槽位为null）
       // **关键修复**：必须检查所有槽位，不能只检查前 targetShopCount 个，否则会丢失超出范围的锁定道具
@@ -580,7 +592,11 @@ export const useGameStore = defineStore('game', () => {
       const refreshedIds = new Set<string>(lockedItemIds)
       newShopRewards.forEach(item => refreshedIds.add(item.option.id))
       
-      while (newShopRewards.length < newItemCount) {
+      // **关键修复**：如果生成的道具数量不足，补充生成（带重试机制）
+      let supplementAttempts = 0
+      const maxSupplementAttempts = 50 // 最多尝试50次
+      while (newShopRewards.length < newItemCount && supplementAttempts < maxSupplementAttempts) {
+        supplementAttempts++
         // 根据层数随机生成品质
         const rand = Math.random()
         let quality: 'green' | 'blue' | 'purple' | 'gold' = 'green'
@@ -614,26 +630,83 @@ export const useGameStore = defineStore('game', () => {
           else if (rand < 0.98) quality = 'purple'
           else quality = 'gold'
         } else if (nextLayer >= 6) {
-          if (rand < 0.60) quality = 'green'
+          if (rand < 0.65) quality = 'green'
           else if (rand < 0.95) quality = 'blue'
-          else quality = 'purple'
+          else if (rand < 0.99) quality = 'purple'
+          else quality = 'gold'
+        } else {
+          // 1-5层：所有品质都有概率，但绿色概率最高
+          if (rand < 0.75) quality = 'green'
+          else if (rand < 0.95) quality = 'blue'
+          else if (rand < 0.99) quality = 'purple'
+          else quality = 'gold'
         }
         
-        const newItem = generateShopItemByQuality(quality, nextLayer, {
+        // 尝试生成道具，如果失败则尝试其他品质
+        let newItem = generateShopItemByQuality(quality, nextLayer, {
           ...ctxBase,
           recentOfferedIds: Array.from(refreshedIds)
         })
         
+        // 如果生成失败，尝试其他品质（按优先级：绿色 -> 蓝色 -> 紫色 -> 金色）
+        if (!newItem || !newItem.option) {
+          const fallbackQualities: Array<'green' | 'blue' | 'purple' | 'gold'> = ['green', 'blue', 'purple', 'gold']
+          for (const fallbackQuality of fallbackQualities) {
+            if (fallbackQuality === quality) continue // 跳过已经尝试过的品质
+            newItem = generateShopItemByQuality(fallbackQuality, nextLayer, {
+              ...ctxBase,
+              recentOfferedIds: Array.from(refreshedIds)
+            })
+            if (newItem && newItem.option) {
+              break
+            }
+          }
+        }
+        
         if (newItem && newItem.option) {
           newShopRewards.push({ ...newItem, locked: false })
           refreshedIds.add(newItem.option.id)
-        } else {
-          // 如果生成失败，跳出循环避免无限循环
-          break
+        }
+        // 如果所有品质都失败，继续循环尝试（最多50次）
+      }
+      
+      // **关键修复**：如果补充生成后仍不足，强制生成到4个（确保总是有4个槽位）
+      if (newShopRewards.length < newItemCount) {
+        console.warn(`[nextLevel] 警告：补充生成后仍不足，需要${newItemCount}个，实际${newShopRewards.length}个，强制生成到${newItemCount}个`)
+        // 强制从绿色池生成剩余的道具
+        const greenPool = ATTRIBUTE_REWARDS.filter(r => r.color === 'green')
+        const mult = getTierMultiplier(nextLayer)
+        while (newShopRewards.length < newItemCount && greenPool.length > 0) {
+          // 随机选择一个绿色道具，不排除任何ID（确保能生成）
+          const randomGreen = greenPool[Math.floor(Math.random() * greenPool.length)]
+          if (randomGreen) {
+            // 计算scaledValue（类似pickTierValue的逻辑）
+            let scaledValue: number | undefined = undefined
+            if (randomGreen.tiers && randomGreen.tiers.length > 0) {
+              let idx = 0
+              if (nextLayer >= 20) idx = randomGreen.tiers.length - 1
+              else if (nextLayer >= 15) idx = Math.min(randomGreen.tiers.length - 1, Math.ceil(randomGreen.tiers.length * 0.67) - 1)
+              else if (nextLayer >= 10) idx = Math.min(randomGreen.tiers.length - 1, Math.ceil(randomGreen.tiers.length * 0.34) - 1)
+              else idx = 0
+              const base = randomGreen.tiers[idx]
+              scaledValue = typeof base === 'number' ? base * mult : undefined
+            } else if (typeof randomGreen.baseValue === 'number') {
+              scaledValue = randomGreen.baseValue * mult
+            }
+            
+            const forcedItem: GeneratedReward = {
+              option: randomGreen,
+              scaledValue
+            }
+            newShopRewards.push({ ...forcedItem, locked: false })
+            refreshedIds.add(randomGreen.id)
+          } else {
+            break // 如果绿色池为空，退出循环
+          }
         }
       }
       
-      // 只取需要的数量
+      // 只取需要的数量（确保不超过目标数量）
       newShopRewards = newShopRewards.slice(0, newItemCount)
       
       // **关键修复**：合并锁定的道具和新生成的道具
@@ -698,14 +771,46 @@ export const useGameStore = defineStore('game', () => {
         }
       }
       
+      // **关键修复**：确保 newShopItems 数组长度始终是 targetShopCount
+      if (newShopItems.length !== targetShopCount) {
+        console.warn(`[nextLevel] 警告：newShopItems.length=${newShopItems.length}，应该是${targetShopCount}，正在修复`)
+        while (newShopItems.length < targetShopCount) {
+          newShopItems.push(null)
+        }
+        if (newShopItems.length > targetShopCount) {
+          // 截断数组（从末尾删除多余元素）
+          newShopItems.splice(targetShopCount)
+        }
+      }
+      
       availableShopItems.value = newShopItems
+      console.log(`[nextLevel] 填充前：newShopItems.length=${newShopItems.length}, newShopRewards.length=${newShopRewards.length}, lockedCount=${lockedCount}, targetShopCount=${targetShopCount}, newItemCount=${newItemCount}`)
+      
       sanitizeShopItems()
+      console.log(`[nextLevel] sanitize后：availableShopItems.value.length=${availableShopItems.value.length}`)
+      
+      // **关键修复**：确保商店总是有足够的槽位（固定4个）
+      const finalTargetCount = 4
+      // 如果长度不足，补充null槽位
+      if (availableShopItems.value.length < finalTargetCount) {
+        const currentLength = availableShopItems.value.length
+        for (let i = currentLength; i < finalTargetCount; i++) {
+          availableShopItems.value.push(null)
+        }
+        console.log(`[nextLevel] 补充槽位：从${currentLength}个补充到${finalTargetCount}个`)
+      }
+      // 如果超出目标数量，截断（不应该发生，但安全起见）
+      if (availableShopItems.value.length > finalTargetCount) {
+        availableShopItems.value = availableShopItems.value.slice(0, finalTargetCount)
+        console.log(`[nextLevel] 截断槽位：从${availableShopItems.value.length}个截断到${finalTargetCount}个`)
+      }
+      console.log(`[nextLevel] 最终：availableShopItems.value.length=${availableShopItems.value.length}`)
       
       // 进入商店时重置刷新费用（可按层数递增基础费用）
       shopRefreshCost.value = 20 + Math.floor((nextLayer - 1) / 3) * 5
       showShop.value = true
       gameState.value.isPaused = true
-      console.log(`[nextLevel] 商店层（通关第${clearedLevel}层后），保留 ${lockedCount} 个锁定道具，生成 ${newShopRewards.length} 个新道具，下一层：${nextLayer}`)
+      console.log(`[nextLevel] 商店层（通关第${clearedLevel}层后），保留 ${lockedCount} 个锁定道具，生成 ${newShopRewards.length} 个新道具，下一层：${nextLayer}，商店槽位：${availableShopItems.value.length}`)
     } else {
       showShop.value = false
     }
@@ -1183,6 +1288,16 @@ export const useGameStore = defineStore('game', () => {
       // 从商店中移除（使用索引直接更新）
       const newItems = [...availableShopItems.value]
       newItems[index] = null
+      
+      // **关键修复**：确保购买后商店始终有4个槽位
+      const targetCount = 4
+      while (newItems.length < targetCount) {
+        newItems.push(null)
+      }
+      if (newItems.length > targetCount) {
+        newItems.splice(targetCount)
+      }
+      
       availableShopItems.value = newItems
       
       // **新增**：触发获得道具的特效反馈（通过游戏引擎）
@@ -1191,7 +1306,7 @@ export const useGameStore = defineStore('game', () => {
         engine.onItemAcquired(item.option)
       }
       
-      console.log(`购买道具: ${item.option.name}，花费 ${price} 金币，槽位 ${index} 已清空`)
+      console.log(`购买道具: ${item.option.name}，花费 ${price} 金币，槽位 ${index} 已清空，当前槽位数量: ${availableShopItems.value.length}`)
     } else {
       console.warn(`金币不足：需要 ${price}，当前只有 ${gameState.value.player.gold}`)
     }
@@ -1246,8 +1361,9 @@ export const useGameStore = defineStore('game', () => {
     const baseRecentIds = ctxBase.recentOfferedIds ?? []
     const refreshedIds = new Set<string>()
     
-    // 确保商店有3个槽位
-    while (availableShopItems.value.length < 3) {
+    // 确保商店有4个槽位
+    const targetCount = 4
+    while (availableShopItems.value.length < targetCount) {
       availableShopItems.value.push(null)
     }
     
@@ -1296,9 +1412,16 @@ export const useGameStore = defineStore('game', () => {
           else if (rand < 0.98) quality = 'purple'
           else quality = 'gold'
         } else if (layer >= 6) {
-          if (rand < 0.60) quality = 'green'
+          if (rand < 0.65) quality = 'green'
           else if (rand < 0.95) quality = 'blue'
-          else quality = 'purple'
+          else if (rand < 0.99) quality = 'purple'
+          else quality = 'gold'
+        } else {
+          // 1-5层：所有品质都有概率，但绿色概率最高
+          if (rand < 0.75) quality = 'green'
+          else if (rand < 0.95) quality = 'blue'
+          else if (rand < 0.99) quality = 'purple'
+          else quality = 'gold'
         }
       }
       
@@ -1313,6 +1436,15 @@ export const useGameStore = defineStore('game', () => {
     })
     sanitizeShopItems()
     availableShopItems.value = [...availableShopItems.value]
+    
+    // **关键修复**：确保刷新后商店总是有4个槽位
+    const finalTargetCount = 4
+    while (availableShopItems.value.length < finalTargetCount) {
+      availableShopItems.value.push(null)
+    }
+    if (availableShopItems.value.length > finalTargetCount) {
+      availableShopItems.value = availableShopItems.value.slice(0, finalTargetCount)
+    }
 
     // 刷新费用递增
     shopRefreshCost.value = Math.min(9999, shopRefreshCost.value + 10)
@@ -1346,6 +1478,45 @@ export const useGameStore = defineStore('game', () => {
         const added = Math.floor(finalValue)
         gameState.value.player.maxHealth += added
         gameState.value.player.health += added
+      }
+    }
+    // 2. 特殊效果奖励（special）- 记录到玩家状态，由引擎处理
+    else if (reward.category === 'special') {
+      // 初始化特殊效果列表（如果不存在）
+      if (!(gameState.value.player as any).specialEffects) {
+        ;(gameState.value.player as any).specialEffects = []
+      }
+      // 避免重复添加相同的效果
+      if (!(gameState.value.player as any).specialEffects.includes(effectKey)) {
+        ;(gameState.value.player as any).specialEffects.push(effectKey)
+      }
+      
+      // 一些特殊效果可以直接应用属性
+      if (effectKey === 'on_kill_heal_orb') {
+        ;(gameState.value.player as any).healOrbOnKill = true
+      } else if (effectKey === 'low_hp_damage_reduction') {
+        ;(gameState.value.player as any).lowHpDamageReduction = true
+      }
+    }
+    // 3. 史诗和传说奖励（epic/legendary）- 同样需要添加到specialEffects
+    else if (reward.category === 'epic' || reward.category === 'legendary') {
+      // 初始化特殊效果列表（如果不存在）
+      if (!(gameState.value.player as any).specialEffects) {
+        ;(gameState.value.player as any).specialEffects = []
+      }
+      // 避免重复添加相同的效果
+      if (effectKey && !(gameState.value.player as any).specialEffects.includes(effectKey)) {
+        ;(gameState.value.player as any).specialEffects.push(effectKey)
+      }
+      
+      // 处理Boss专属效果
+      if (effectKey === 'random_special_proc') {
+        if (!(gameState.value.player as any).bossExclusiveEffects) {
+          ;(gameState.value.player as any).bossExclusiveEffects = []
+        }
+        if (!(gameState.value.player as any).bossExclusiveEffects.includes('random_special_proc')) {
+          ;(gameState.value.player as any).bossExclusiveEffects.push('random_special_proc')
+        }
       }
     }
     

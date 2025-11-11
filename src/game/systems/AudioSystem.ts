@@ -11,6 +11,8 @@ export class AudioSystem {
   private isMuted: boolean = false
   private audioContext: AudioContext | null = null
   private musicFadeInterval: number | null = null
+  private generatedMusicOscillator: OscillatorNode | null = null // 保存生成的背景音乐振荡器，用于停止
+  private generatedMusicGain: GainNode | null = null // 保存生成的背景音乐增益节点
 
   constructor() {
     // 初始化 Web Audio API（用于程序化生成音效）
@@ -244,9 +246,9 @@ export class AudioSystem {
    * 播放背景音乐
    */
   playBackgroundMusic(fadeIn: boolean = true): void {
-    // 如果没有加载的背景音乐文件，使用程序化生成
+    // **修复**：如果没有加载的背景音乐文件，直接返回，不生成背景音乐（避免嗡嗡声）
     if (!this.backgroundMusic) {
-      this.generateBackgroundMusic()
+      console.debug('No background music file loaded, skipping playback')
       return
     }
     
@@ -292,6 +294,17 @@ export class AudioSystem {
    * 停止背景音乐
    */
   stopBackgroundMusic(fadeOut: boolean = true): void {
+    // 停止生成的背景音乐（如果存在）
+    if (this.generatedMusicOscillator) {
+      try {
+        this.generatedMusicOscillator.stop()
+      } catch (e) {
+        // 振荡器可能已经停止
+      }
+      this.generatedMusicOscillator = null
+      this.generatedMusicGain = null
+    }
+
     if (!this.backgroundMusic) return
 
     if (fadeOut) {
@@ -325,6 +338,17 @@ export class AudioSystem {
    * 暂停背景音乐
    */
   pauseBackgroundMusic(): void {
+    // 停止生成的背景音乐（如果存在）
+    if (this.generatedMusicOscillator) {
+      try {
+        this.generatedMusicOscillator.stop()
+      } catch (e) {
+        // 振荡器可能已经停止
+      }
+      this.generatedMusicOscillator = null
+      this.generatedMusicGain = null
+    }
+
     if (this.backgroundMusic) {
       this.backgroundMusic.pause()
     }
@@ -345,6 +369,21 @@ export class AudioSystem {
   generateBackgroundMusic(): void {
     if (!this.audioContext) return
 
+    // **修复**：先停止之前生成的背景音乐（如果存在）
+    if (this.generatedMusicOscillator) {
+      try {
+        this.generatedMusicOscillator.stop()
+      } catch (e) {
+        // 振荡器可能已经停止
+      }
+      this.generatedMusicOscillator = null
+      this.generatedMusicGain = null
+    }
+
+    // **修复**：默认不生成背景音乐，避免嗡嗡声
+    // 如果用户需要背景音乐，应该加载音频文件
+    // 如果需要启用程序化生成的背景音乐，可以取消下面的注释
+    /*
     // 创建一个简单的循环音乐（低沉的嗡嗡声）
     const oscillator = this.audioContext.createOscillator()
     const gainNode = this.audioContext.createGain()
@@ -358,9 +397,12 @@ export class AudioSystem {
 
     oscillator.start()
 
-    // 注意：这个简单的音乐不会自动停止，会在游戏运行期间一直播放
-    // 实际应用中应该使用更复杂的音频文件
-    console.log('Generated simple background music')
+    // 保存引用以便后续停止
+    this.generatedMusicOscillator = oscillator
+    this.generatedMusicGain = gainNode
+    */
+    
+    console.log('Background music generation disabled to avoid buzzing sound. Load an audio file for background music.')
   }
 
   /**
@@ -370,6 +412,17 @@ export class AudioSystem {
     if (this.musicFadeInterval) {
       clearInterval(this.musicFadeInterval)
       this.musicFadeInterval = null
+    }
+
+    // 停止生成的背景音乐
+    if (this.generatedMusicOscillator) {
+      try {
+        this.generatedMusicOscillator.stop()
+      } catch (e) {
+        // 振荡器可能已经停止
+      }
+      this.generatedMusicOscillator = null
+      this.generatedMusicGain = null
     }
 
     this.soundEffects.forEach(audio => {

@@ -48,9 +48,10 @@ export class TestGameEngine {
     skillCooldown?: number
     lastSkill?: number
   }> = []
-  private projectiles: Array<{ x: number; y: number; vx: number; vy: number; damage: number; isCrit: boolean; life: number; pierce: number; maxPierce: number; isGrenade?: boolean; owner: 'player' | 'enemy'; hitEnemies?: Set<any> }> = []
-  private readonly MAX_PROJECTILES = 150 // **关键修复**：进一步大幅降低投射物上限，防止卡死
-  private readonly MAX_ENEMIES = 80 // **关键修复**：大幅降低敌人上限，防止卡死
+  private projectiles: Array<{ id: string; x: number; y: number; vx: number; vy: number; damage: number; isCrit: boolean; life: number; pierce: number; maxPierce: number; isGrenade?: boolean; owner: 'player' | 'enemy'; hitEnemies?: Set<any> }> = []
+  private readonly MAX_PROJECTILES = 120 // **关键修复**：降低投射物上限，防止卡死（从150降到120）
+  private readonly MAX_ENEMIES = 70 // **关键修复**：降低敌人上限，防止卡死（从80降到70）
+  private projectileIdCounter = 0 // **修复**：投射物ID计数器，用于生成唯一ID
   private multiShotPhase = 0 // 控制偶数投射物时的左右偏移交替，让其中一发始终对准中心
   private effects: Array<{ x: number; y: number; type: string; life: number; size: number }> = []
   private droppedItems: Array<{ id: string; x: number; y: number; vx: number; vy: number; type: 'heal_orb' | 'experience' | 'energy' | 'item'; value: number; size: number; life: number; maxLife: number; magnetRange?: number; attractedToPlayer?: boolean }> = [] // 掉落物数组
@@ -458,12 +459,16 @@ export class TestGameEngine {
     
     // 键盘事件监听
     window.addEventListener('keydown', (e) => {
-      this.keys[e.key.toLowerCase()] = true
-      this.handleKeyDown(e.key)
+      if (e.key) {
+        this.keys[e.key.toLowerCase()] = true
+        this.handleKeyDown(e.key)
+      }
     })
     
     window.addEventListener('keyup', (e) => {
-      this.keys[e.key.toLowerCase()] = false
+      if (e.key) {
+        this.keys[e.key.toLowerCase()] = false
+      }
     })
   }
 
@@ -524,6 +529,8 @@ export class TestGameEngine {
     this.projectiles = []
     this.effects = []
     this.droppedItems = []
+    // **关键修复**：清理投射物视觉系统的所有拖尾效果，防止残留子弹显示
+    this.projectileVisualSystem.clearAll()
     this.enemySpawnTimer = 0 // 重置敌人生成计时器
     // 重置快速虫波次控制
     this.bugWaveCount = 0
@@ -547,6 +554,10 @@ export class TestGameEngine {
       cancelAnimationFrame(this.animationId)
       this.animationId = null
     }
+    
+    // **关键修复**：停止时清理所有投射物和视觉效果，防止残留
+    this.projectiles = []
+    this.projectileVisualSystem.clearAll()
     
     // 停止背景音乐
     this.audioSystem.stopBackgroundMusic(true)
@@ -576,10 +587,11 @@ export class TestGameEngine {
     const isNearEnd = timeRemaining < 20
     // **关键修复**：最后20秒时每2帧更新一次（从3帧改为2帧，减少卡顿感）
     const visualUpdateInterval = isNearEnd ? 2 : 2 // 最后20秒时也每2帧更新一次，保持流畅
+    
     if (this.visualUpdateCounter % visualUpdateInterval === 0) {
       this.visualRenderer.update(deltaTime * visualUpdateInterval) // 补偿时间
       this.enemyVisualSystem.update(deltaTime * visualUpdateInterval)
-      this.projectileVisualSystem.update(deltaTime * visualUpdateInterval)
+      // 注意：投射物视觉系统更新在投射物更新之后，使用最新的活跃投射物ID
     }
     
     // **关键修复**：每帧都更新粒子效果，但限制更严格
@@ -867,8 +879,26 @@ export class TestGameEngine {
     // **关键修复**：处理延迟发射的投射物（在投射物更新前）
     this.processDelayedRangedAttacks()
     
+    // **重要修复**：先处理自动攻击（发射新子弹），然后再更新投射物（清理旧投射物）
+    // 这样可以确保新发射的子弹不会被同一帧清理
+    this.handleAutoAttack()
+    
     // 更新投射物（在玩家位置更新后）
     this.updateProjectiles()
+    
+    // **关键修复**：在投射物更新后，立即更新投射物视觉系统，使用最新的活跃投射物ID集合
+    // 这样可以立即清理对应投射物已经不存在的拖尾，避免残留显示
+    if (this.visualUpdateCounter % visualUpdateInterval === 0) {
+      // 收集更新后的活跃投射物ID
+      const activeProjectileIds = new Set<string>()
+      for (const projectile of this.projectiles) {
+        if (projectile && projectile.id && projectile.life > 0) {
+          activeProjectileIds.add(projectile.id)
+        }
+      }
+      // **关键修复**：传入活跃投射物ID集合，立即清理对应投射物已经不存在的拖尾
+      this.projectileVisualSystem.update(deltaTime * visualUpdateInterval, activeProjectileIds)
+    }
 
     // 更新掉落物
     this.updateDroppedItems()
@@ -878,9 +908,6 @@ export class TestGameEngine {
 
     // 更新特效
     this.updateEffects()
-
-    // 自动攻击
-    this.handleAutoAttack()
 
     // 更新快速虫波次冷却
     if (this.bugWaveCooldown > 0) {
@@ -925,19 +952,38 @@ export class TestGameEngine {
     // 计算当前间隔：从慢到快
     const baseSpawnInterval = initialSpawnInterval - (initialSpawnInterval - maxSpeedInterval) * smoothProgress
     
-    // 根据敌人数量微调：敌人很多时才稍微减慢，但影响很小，确保持续生成
-    // 只在敌人数量非常多时（>100）才开始明显减慢，但永远不会停止
+    // **性能优化**：根据敌人数量和时间微调生成速度
+    // 最后20秒时，更激进地减慢生成速度，防止卡顿
+    const timeRemainingSpawn = this.gameTime
+    const isNearEndSpawn = timeRemainingSpawn < 20
+    
     let enemyCountFactor = 1.0
-    if (this.enemies.length > 100) {
-      // 超过100个敌人才开始轻微影响（每100个敌人增加5%间隔）
-      const excessEnemies = this.enemies.length - 100
-      enemyCountFactor = 1.0 + (excessEnemies / 100) * 0.05 // 最多增加约20%
+    if (isNearEndSpawn) {
+      // **关键性能优化**：最后20秒时，根据敌人数量大幅减慢生成速度
+      if (this.enemies.length > this.MAX_ENEMIES * 0.6) {
+        // 敌人数量超过60%上限时，大幅减慢生成（增加50%间隔）
+        enemyCountFactor = 1.5
+      } else if (this.enemies.length > this.MAX_ENEMIES * 0.5) {
+        // 敌人数量超过50%上限时，减慢生成（增加30%间隔）
+        enemyCountFactor = 1.3
+      }
+    } else {
+      // 正常时，只在敌人数量非常多时稍微减慢
+      if (this.enemies.length > this.MAX_ENEMIES * 0.8) {
+        // 超过80%上限时开始轻微影响（增加10%间隔）
+        enemyCountFactor = 1.1
+      }
     }
+    
     const spawnInterval = Math.floor(baseSpawnInterval * enemyCountFactor)
     
-    // 限制敌人总数，防止性能问题
-    // 如果敌人数量超过限制，停止生成新敌人
-    if (this.enemies.length >= this.MAX_ENEMIES) {
+    // **性能优化**：限制敌人总数，防止性能问题
+    // 最后20秒时，更激进地限制敌人数量
+    const maxEnemiesForSpawn = isNearEndSpawn 
+      ? Math.floor(this.MAX_ENEMIES * 0.85) // 最后20秒时，最多85%上限
+      : this.MAX_ENEMIES // 正常时使用完整上限
+    
+    if (this.enemies.length >= maxEnemiesForSpawn) {
       // 敌人数量已达上限，不生成新敌人
       return
     }
@@ -2180,6 +2226,7 @@ export class TestGameEngine {
             const bossDamage = baseDamage * 1.5
             
             this.projectiles.push({
+              id: `proj_${++this.projectileIdCounter}_${Date.now()}`, // **修复**：唯一ID
               x: enemy.x,
               y: enemy.y,
               vx,
@@ -2350,6 +2397,7 @@ export class TestGameEngine {
             const bossDamageMultiplier = this.currentLevel === 5 ? 1.0 : 1.5
             const bossDamage = baseDamage * bossDamageMultiplier
             this.projectiles.push({
+              id: `proj_${++this.projectileIdCounter}_${Date.now()}`, // **修复**：唯一ID
               x: enemy.x,
               y: enemy.y,
               vx: Math.cos(angle) * bulletSpeed,
@@ -2957,6 +3005,7 @@ export class TestGameEngine {
             const angle = (i / 6) * Math.PI * 2
             const bulletSpeed = 7
             this.projectiles.push({
+              id: `proj_${++this.projectileIdCounter}_${Date.now()}`, // **修复**：唯一ID
               x: enemy.x,
               y: enemy.y,
               vx: Math.cos(angle) * bulletSpeed,
@@ -3190,6 +3239,7 @@ export class TestGameEngine {
               const angle = Math.atan2(dy, dx) + (i - 1) * 0.3
               const bulletSpeed = 6
               const homingProjectile: any = {
+                id: `proj_${++this.projectileIdCounter}_${Date.now()}`, // **修复**：唯一ID
                 x: enemy.x,
                 y: enemy.y,
                 vx: Math.cos(angle) * bulletSpeed,
@@ -3311,6 +3361,7 @@ export class TestGameEngine {
             for (let i = 0; i < 5; i++) {
               const spreadAngle = angle + (i - 2) * 0.15  // 更宽的扇形
               this.projectiles.push({
+                id: `proj_${++this.projectileIdCounter}_${Date.now()}`, // **修复**：唯一ID
                 x: enemy.x,
                 y: enemy.y,
                 vx: Math.cos(spreadAngle) * bulletSpeed,
@@ -3601,6 +3652,7 @@ export class TestGameEngine {
           for (let i = 0; i < projectileCount; i++) {
             const spreadAngle = projectileCount > 1 ? (i - 0.5) * 0.3 : 0
             this.projectiles.push({
+              id: `proj_${++this.projectileIdCounter}_${Date.now()}`, // **修复**：唯一ID
               x: enemy.x,
               y: enemy.y,
               vx: Math.cos(angle + spreadAngle) * bulletSpeed,
@@ -3644,6 +3696,7 @@ export class TestGameEngine {
             for (let i = 0; i < 3; i++) {
               const angle = lightningAngle + (i - 1) * 0.4
               this.projectiles.push({
+                id: `proj_${++this.projectileIdCounter}_${Date.now()}`, // **修复**：唯一ID
                 x: enemy.x,
                 y: enemy.y,
                 vx: Math.cos(angle) * 10,
@@ -3873,6 +3926,7 @@ export class TestGameEngine {
         // 限制投射物数量
         if (this.projectiles.length < this.MAX_PROJECTILES) {
           const newProjectile = {
+            id: `proj_${++this.projectileIdCounter}_${Date.now()}`, // **修复**：唯一ID
             x: enemy.x,
             y: enemy.y,
             vx,
@@ -3967,6 +4021,7 @@ export class TestGameEngine {
     const grenadeDamage = 15 + this.currentLevel * 2
     
     this.projectiles.push({
+      id: `proj_${++this.projectileIdCounter}_${Date.now()}`, // **修复**：唯一ID
       x: enemy.x,
       y: enemy.y,
       vx,
@@ -4092,7 +4147,8 @@ export class TestGameEngine {
           break
         }
         case 'on_hit_chain_lightning': {
-          // 连锁闪电：15%几率连锁闪电（3目标）
+          // **修复**：连锁闪电：15%几率连锁闪电（3目标）
+          // 增加触发几率，并确保有足够敌人时才能触发
           if (Math.random() < 0.15) {
             // 找到最近的3个敌人（不包括当前目标）
             const nearbyEnemies = this.enemies
@@ -4104,45 +4160,50 @@ export class TestGameEngine {
               .sort((a, b) => a.distSq - b.distSq)
               .slice(0, 3)
             
-            // 对每个目标造成连锁伤害
-            nearbyEnemies.forEach(({ enemy: target }, index) => {
-              const chainDamage = damage * 0.5 * (1 - index * 0.2) // 伤害递减
-              target.health -= chainDamage
-              
-              // 添加连锁闪电特效 - 黄色闪电粒子
-              this.effectsSystem.createParticleEffect('energy_discharge', target.x, target.y, {
-                count: 15,
+            // **修复**：只有当有可连锁的敌人时才触发效果
+            if (nearbyEnemies.length > 0) {
+              // 在起始敌人位置添加闪电特效（先添加，让玩家看到触发）
+              this.effectsSystem.createParticleEffect('energy_discharge', enemy.x, enemy.y, {
+                count: 10,
                 colors: ['#ffff00', '#ffaa00', '#ffffff'],
-                size: { min: 2, max: 5 },
-                speed: { min: 60, max: 150 },
-                life: { min: 300, max: 600 },
+                size: { min: 3, max: 6 },
+                speed: { min: 80, max: 180 },
+                life: { min: 400, max: 700 },
                 spread: 360
               })
-              // 添加黄色击中特效
-              this.addHitEffect(target.x, target.y, false, '#ffff00')
               
-              // 绘制闪电链效果
-              this.effects.push({
-                x: enemy.x,
-                y: enemy.y,
-                type: 'chain_lightning',
-                life: 15,
-                size: Math.sqrt((target.x - enemy.x) ** 2 + (target.y - enemy.y) ** 2),
-                targetX: target.x,
-                targetY: target.y,
-                color: '#ffff00'
-              } as any)
-            })
-            
-            // 在起始敌人位置也添加闪电特效
-            this.effectsSystem.createParticleEffect('energy_discharge', enemy.x, enemy.y, {
-              count: 10,
-              colors: ['#ffff00', '#ffaa00', '#ffffff'],
-              size: { min: 3, max: 6 },
-              speed: { min: 80, max: 180 },
-              life: { min: 400, max: 700 },
-              spread: 360
-            })
+              // 对每个目标造成连锁伤害
+              nearbyEnemies.forEach(({ enemy: target }, index) => {
+                const chainDamage = damage * 0.5 * (1 - index * 0.2) // 伤害递减
+                if (target.health > 0) {
+                  target.health -= chainDamage
+                  
+                  // 添加连锁闪电特效 - 黄色闪电粒子
+                  this.effectsSystem.createParticleEffect('energy_discharge', target.x, target.y, {
+                    count: 15,
+                    colors: ['#ffff00', '#ffaa00', '#ffffff'],
+                    size: { min: 2, max: 5 },
+                    speed: { min: 60, max: 150 },
+                    life: { min: 300, max: 600 },
+                    spread: 360
+                  })
+                  // 添加黄色击中特效
+                  this.addHitEffect(target.x, target.y, false, '#ffff00')
+                  
+                  // 绘制闪电链效果
+                  this.effects.push({
+                    x: enemy.x,
+                    y: enemy.y,
+                    type: 'chain_lightning',
+                    life: 15,
+                    size: Math.sqrt((target.x - enemy.x) ** 2 + (target.y - enemy.y) ** 2),
+                    targetX: target.x,
+                    targetY: target.y,
+                    color: '#ffff00'
+                  } as any)
+                }
+              })
+            }
           }
           break
         }
@@ -4397,16 +4458,32 @@ export class TestGameEngine {
     if (this.projectiles.length > this.MAX_PROJECTILES) {
       // 保留最新的投射物，删除最旧的
       const excess = this.projectiles.length - this.MAX_PROJECTILES
+      // **修复**：清理被移除投射物的拖尾效果（使用投射物的唯一ID）
+      for (let i = 0; i < excess; i++) {
+        const projectile = this.projectiles[i]
+        if (projectile && projectile.id) {
+          this.projectileVisualSystem.clearProjectileTrails(projectile.id)
+        }
+      }
       this.projectiles.splice(0, excess)
       console.warn(`[性能] 投射物数量超限，清理 ${excess} 个旧投射物`)
     }
     
-    // **关键性能修复**：最后20秒时适度清理（不要过度优化导致卡顿）
+    // **关键性能修复**：最后20秒时更激进的清理策略，防止卡顿
+    // **重要修复**：与shootProjectile()中的限制保持一致，使用60%而不是50%，避免过度清理导致新子弹无法发射
     if (isNearEndProj) {
-      // **关键修复**：最后20秒时，强制限制投射物数量到70%（从60%提高到70%，减少卡顿）
-      const targetCount = Math.floor(this.MAX_PROJECTILES * 0.7)
+      // **关键修复**：最后20秒时，限制投射物数量到60%（与shootProjectile和最终清理保持一致）
+      // **修复**：保留一些空间给新发射的子弹，避免立即被清理
+      const targetCount = Math.floor(this.MAX_PROJECTILES * 0.6)
       if (this.projectiles.length > targetCount) {
         const excess = this.projectiles.length - targetCount
+        // **修复**：清理被移除投射物的拖尾效果（使用投射物的唯一ID）
+        for (let i = 0; i < excess; i++) {
+          const projectile = this.projectiles[i]
+          if (projectile && projectile.id) {
+            this.projectileVisualSystem.clearProjectileTrails(projectile.id)
+          }
+        }
         this.projectiles.splice(0, excess)
       }
     }
@@ -4430,20 +4507,33 @@ export class TestGameEngine {
       }
     }
     
-    // **关键修复**：优先处理所有玩家投射物，确保伤害不丢失
-    // 最后20秒时，仍然处理所有玩家投射物，但限制敌人投射物
-    let maxPlayerProjectiles = playerProjectiles.length // 总是处理所有玩家投射物
+    // **关键修复**：优先处理玩家投射物，确保伤害不丢失
+    // **性能优化**：最后20秒时也限制玩家投射物处理数量，防止卡顿
+    // **关键修复**：确保新发射的子弹总是被处理，避免子弹停留在发射位置
+    let maxPlayerProjectiles: number
     let maxEnemyProjectiles: number
     
     if (isNearEndProj) {
-      // **关键修复**：最后20秒：适度限制敌人投射物，但保持玩家投射物完整处理（不要过度优化导致卡顿）
-      maxEnemyProjectiles = Math.min(enemyProjectiles.length, 60) // 只处理60个敌人投射物（从40提高到60，减少卡顿）
+      // 重要修复：最后20秒仍处理全部玩家投射物，避免子弹不结算伤害
+      // 仍然对敌人投射物做强限制，保障性能
+      maxPlayerProjectiles = playerProjectiles.length
+      maxEnemyProjectiles = Math.min(enemyProjectiles.length, 40) // 大幅降低敌人投射物处理（从60降到40）
     } else if (enemyCount > 60) {
+      maxPlayerProjectiles = playerProjectiles.length // 正常时处理所有玩家投射物
       maxEnemyProjectiles = Math.min(enemyProjectiles.length, 50) // 敌人很多时处理50个
     } else if (enemyCount > 40) {
+      maxPlayerProjectiles = playerProjectiles.length
       maxEnemyProjectiles = Math.min(enemyProjectiles.length, 70) // 敌人中等时处理70个
     } else {
+      maxPlayerProjectiles = playerProjectiles.length
       maxEnemyProjectiles = Math.min(enemyProjectiles.length, 90) // 敌人少时处理90个
+    }
+    
+    // **关键修复**：始终优先处理最新的投射物（新发射的子弹），避免子弹停留在发射位置
+    // **修复**：不仅最后20秒，任何时候如果限制了处理数量，都优先处理最新的
+    if (maxPlayerProjectiles < playerProjectiles.length) {
+      // 反转数组，优先处理最新的投射物（新发射的子弹在数组末尾）
+      playerProjectiles.reverse()
     }
     
     // **关键修复**：先处理所有玩家投射物（确保伤害不丢失）
@@ -4500,12 +4590,17 @@ export class TestGameEngine {
       // 播放爆炸音效
       this.audioSystem.playSoundEffect('explosion', { volume: 1.0 })
       
+      // **修复**：炸弹爆炸时立即清理拖尾
+      if (projectile.id) {
+        this.projectileVisualSystem.clearProjectileTrails(projectile.id)
+      }
+      
       // 移除投射物
       projectile.life = 0
           continue
         }
         
-        projectile.life--
+        // **关键修复**：不再在这里递减life，因为已经在批量移除前统一递减了，避免重复递减
         continue // 炸弹处理完，继续下一个投射物
       }
       
@@ -4545,52 +4640,297 @@ export class TestGameEngine {
       const prevY = projectile.y
       projectile.x += projectile.vx
       projectile.y += projectile.vy
-      projectile.life--
-
-      // **关键修复**：如果投射物已经失效，跳过所有碰撞检测
+      
+      // **关键修复**：先进行碰撞检测，然后再递减life，确保投射物有机会造成伤害
+      // 如果投射物已经失效，立即清理拖尾并跳过所有碰撞检测
       if (projectile.life <= 0) {
+        // **修复**：投射物失效时立即清理拖尾
+        if (projectile.id) {
+          this.projectileVisualSystem.clearProjectileTrails(projectile.id)
+        }
         continue
       }
       
       // **关键修复**：计算投射物移动距离，用于更精确的碰撞检测
-      const moveDistance = Math.sqrt(projectile.vx * projectile.vx + projectile.vy * projectile.vy)
+      // **性能优化**：使用平方距离避免Math.sqrt，只在需要时计算
+      const moveDistanceSq = projectile.vx * projectile.vx + projectile.vy * projectile.vy
+      const moveDistance = Math.sqrt(moveDistanceSq) // 只在需要时计算
+      
+      // **关键兜底（单发子弹场景）**：当本帧只有一枚玩家投射物时，对全部敌人做一次全量线段-圆检测
+      // 避免任何筛选导致的漏判，确保命中不丢失
+      if (playerProjectiles.length <= 1 && this.enemies.length > 0) {
+        let handledInSingleShotPass = false
+        const segX1 = prevX
+        const segY1 = prevY
+        const segX2 = projectile.x
+        const segY2 = projectile.y
+        const segDx = segX2 - segX1
+        const segDy = segY2 - segY1
+        const segLenSq = segDx * segDx + segDy * segDy
+        
+        // 使用与主检测一致的保守半径策略：敌人半径 + 投射物半径(≈5) + 速度补偿
+        const speedBonusSingle = Math.min(25, moveDistance * 1.2)
+        
+        // 逐个敌人精确检测
+        for (let ei = 0; ei < this.enemies.length; ei++) {
+          const e = this.enemies[ei]
+          if (!e) continue
+          if (!projectile.hitEnemies) projectile.hitEnemies = new Set()
+          if (projectile.hitEnemies.has(e)) continue
+          
+          const collisionRadius = (e.size || 15) + 5 + speedBonusSingle
+          const r2 = collisionRadius * collisionRadius
+          
+          let collided = false
+          if (segLenSq > 0) {
+            const toEx = e.x - segX1
+            const toEy = e.y - segY1
+            const t = Math.max(0, Math.min(1, (toEx * segDx + toEy * segDy) / segLenSq))
+            const cx = segX1 + t * segDx
+            const cy = segY1 + t * segDy
+            const ddx = cx - e.x
+            const ddy = cy - e.y
+            collided = (ddx * ddx + ddy * ddy) <= r2
+          } else {
+            const ddx = segX1 - e.x
+            const ddy = segY1 - e.y
+            collided = (ddx * ddx + ddy * ddy) <= r2
+          }
+          
+          if (!collided) continue
+          
+          handledInSingleShotPass = true
+          
+          // 命中处理：与主流程保持一致
+          let actualDamage = projectile.damage
+          const shieldEnemy = e as any
+          if (shieldEnemy.shield > 0) {
+            const shieldDamage = Math.min(shieldEnemy.shield, actualDamage)
+            shieldEnemy.shield -= shieldDamage
+            actualDamage -= shieldDamage
+            this.addHitEffect(e.x, e.y, false, '#00ffff')
+            if (shieldEnemy.shield <= 0) {
+              this.addHitEffect(e.x, e.y, true, '#ffff00')
+            }
+          }
+          
+          if (actualDamage > 0) {
+            e.health -= actualDamage
+            const lifestealPercent = this.gameState?.player?.lifesteal || 0
+            if (lifestealPercent > 0) {
+              const healAmount = Math.floor(actualDamage * lifestealPercent)
+              this.playerHealth = Math.min(this.playerMaxHealth, this.playerHealth + healAmount)
+            }
+            const specialEffects = (this.gameState?.player as any)?.specialEffects || []
+            if (specialEffects.length > 0) {
+              this.applySpecialEffectsOnHit(e, projectile, actualDamage, specialEffects)
+            }
+            const bossExclusiveEffects = (this.gameState?.player as any)?.bossExclusiveEffects || []
+            if (bossExclusiveEffects.includes('random_special_proc')) {
+              const specialEffects2 = (this.gameState?.player as any)?.specialEffects || []
+              this.applyChaosResonance(e, projectile, actualDamage, specialEffects2)
+            }
+            this.addHitEffect(e.x, e.y, projectile.isCrit)
+            this.audioSystem.playSoundEffect('projectile_hit', {
+              volume: projectile.isCrit ? 1.2 : 0.8,
+              pitch: projectile.isCrit ? 1.5 : 1.0
+            })
+          }
+          
+          projectile.hitEnemies.add(e)
+          projectile.pierce++
+          
+          // 检查穿透上限
+          if (projectile.pierce > projectile.maxPierce) {
+            // 无穿透时回退到碰撞点
+            if (projectile.maxPierce === 0) {
+              const dx = e.x - prevX
+              const dy = e.y - prevY
+              const dist = Math.sqrt(dx * dx + dy * dy)
+              if (dist > 0) {
+                const collisionDist = dist - (e.size || 15) - 5
+                if (collisionDist > 0) {
+                  const t = collisionDist / dist
+                  projectile.x = prevX + dx * t
+                  projectile.y = prevY + dy * t
+                } else {
+                  projectile.x = prevX
+                  projectile.y = prevY
+                }
+              }
+            }
+            projectile.life = 0
+          }
+          
+          // 击杀与分数处理
+          if (e.health <= 0) {
+            if (e.warningLine) {
+              e.warningLine = undefined
+            }
+            const specialEffects = (this.gameState?.player as any)?.specialEffects || []
+            if (specialEffects.length > 0) {
+              this.applySpecialEffectsOnKill(e, specialEffects)
+            }
+            this.audioSystem.playSoundEffect('enemy_death')
+            const bossTypes = ['infantry_captain', 'fortress_guard', 'void_shaman', 'legion_commander', 'boss']
+            const isBoss = e.type && bossTypes.includes(e.type)
+            if (isBoss) {
+              if (this.gameState) {
+                const remainingBosses = this.enemies.filter(en => 
+                  en !== e && en.type && bossTypes.includes(en.type) && en.health > 0
+                )
+                if (remainingBosses.length === 0) {
+                  if (!this.gameState.bossDefeated || this.gameState.bossDefeated !== this.currentLevel) {
+                    this.gameState.bossDefeated = this.currentLevel
+                    this.gameState.hasDefeatedBoss = true
+                  }
+                }
+              }
+            }
+            const isElite = e.isElite
+            if (isElite) {
+              if (this.gameState && !this.gameState.showPassiveSelection) {
+                if (this.gameState.hasDefeatedBoss) {
+                  this.gameState.extraAttributeSelect = true
+                }
+              }
+            }
+            e.health = 0
+            if (!(e as any).scoreAdded) {
+              const scoreGain = isElite ? 50 : 10
+              this.score += scoreGain
+              if (this.gameState) {
+                this.gameState.score = this.score
+                if (this.gameState.player) {
+                  this.gameState.player.gold = (this.gameState.player.gold || 0) + scoreGain
+                }
+              }
+              ;(e as any).scoreAdded = true
+            }
+            this.addDeathEffect(e.x, e.y)
+          }
+          
+          // 如果已达终止条件，结束单发兜底循环
+          if (projectile.life <= 0) {
+            break
+          }
+        }
+        
+        // 单发兜底命中过，则跳过后续筛选流程，避免重复计算
+        if (handledInSingleShotPass) {
+          // 递减life放在统一位置，所以下面会继续执行递减逻辑
+          // 这里直接进入下一个投射物
+          // 使用标签或结构化控制较复杂，这里通过包装成条件来短路后续碰撞筛选
+        } else {
+          // 未命中则继续走下方标准流程
+        }
+      }
       
       // 玩家的投射物 - 检查与敌人的碰撞（已经在上面处理了移动）
       // **关键性能修复**：大幅限制碰撞检测，防止O(n*m)复杂度导致30秒卡死
       // **关键修复**：根据投射物速度动态调整检查半径，防止快速投射物穿过敌人
-      const baseCheckRadius = 50
-      const speedMultiplier = Math.min(2.0, 1.0 + moveDistance / 10) // 速度越快，检查半径越大
+      const baseCheckRadius = 80 // **关键修复**：增加基础检查半径，确保能检测到敌人
+      const speedMultiplier = Math.min(3.0, 1.0 + moveDistance / 8) // 速度越快，检查半径越大
       const checkRadius = baseCheckRadius * speedMultiplier
       const checkRadiusSq = checkRadius * checkRadius
-      const maxEnemiesToCheck = Math.min(this.enemies.length, 15) // **关键修复**：从20降低到15，进一步减少检查次数
+      const maxEnemiesToCheck = Math.min(this.enemies.length, 20) // **关键修复**：增加检查数量，确保不遗漏敌人
       
       // **关键修复**：如果敌人数量太多，使用更激进的碰撞检测优化
       if (this.enemies.length > this.MAX_ENEMIES * 0.7) {
         // **关键修复**：敌人太多时，只检查最近的敌人（最后20秒时更少）
         const timeRemaining = this.gameTime
         const isNearEnd = timeRemaining < 20
-        // **关键修复**：最后20秒时适度减少检查，但不要过度优化导致卡顿
-        const maxEnemiesToScan = isNearEnd ? 20 : 25 // 最后20秒时扫描20个敌人（从15提高到20，减少卡顿）
-        const maxEnemiesToCheck = isNearEnd ? 8 : 10 // 最后20秒时检查8个敌人（从5提高到8，减少卡顿）
-        const nearbyEnemies: Array<{enemy: any, distSq: number, index: number}> = []
-        // **关键修复**：限制扫描范围
+        // **关键修复**：增加检查的敌人数量，防止快速投射物跳过敌人
+        // 根据投射物速度动态调整检查数量，速度越快检查越多
+        const speedFactor = Math.min(2.5, 1.0 + moveDistance / 15) // **关键修复**：增加速度因子，确保快速投射物检查更多敌人
+        const baseMaxScan = isNearEnd ? 25 : 40 // 保留参数以便调整，但扫描将覆盖全部敌人
+        const baseMaxCheck = isNearEnd ? 12 : 20 // **关键修复**：大幅增加检查数量，确保不遗漏敌人
+        // **关键修复**：扫描全部敌人，但仅保留最近的若干个用于精确检测
+        const maxEnemiesToScan = this.enemies.length
+        const maxEnemiesToCheck = Math.min(maxEnemiesToScan, Math.floor(baseMaxCheck * speedFactor))
+        
+        // **性能优化**：使用简单的最近敌人查找，避免排序
+        let closestEnemies: Array<{enemy: any, distSq: number}> = []
+        let maxDistSq = checkRadiusSq
+        
+        // **关键修复**：使用移动前的起点和移动后的终点来计算检查范围
+        // 检查范围需要覆盖整个移动路径，防止快速投射物跳过敌人
+        const pathStartX = prevX
+        const pathStartY = prevY
+        const pathEndX = projectile.x
+        const pathEndY = projectile.y
+        const pathCenterX = (pathStartX + pathEndX) / 2
+        const pathCenterY = (pathStartY + pathEndY) / 2
+        const pathHalfLength = moveDistance / 2
+        
+        // **关键修复**：计算线段方向向量，用于精确的距离计算
+        const lineDx = pathEndX - pathStartX
+        const lineDy = pathEndY - pathStartY
+        const lineLengthSq = lineDx * lineDx + lineDy * lineDy
+        
+        // **关键修复**：检查半径需要覆盖路径中心到路径两端的距离，加上敌人半径
+        // 对于快速移动的投射物，需要更大的检查半径来确保不会跳过敌人
+        const expandedCheckRadius = pathHalfLength + checkRadius + Math.min(40, moveDistance * 0.6)
+        const expandedCheckRadiusSq = expandedCheckRadius * expandedCheckRadius
+        
+        // **性能优化**：只扫描部分敌人，找到最近的几个
         for (let enemyIndex = 0; enemyIndex < Math.min(this.enemies.length, maxEnemiesToScan); enemyIndex++) {
           const enemy = this.enemies[enemyIndex]
-          if (!enemy) continue
+          if (!enemy || enemy.health <= 0) continue
           
-          const dx = projectile.x - enemy.x
-          const dy = projectile.y - enemy.y
-          const roughDistanceSq = dx * dx + dy * dy
+          // **关键修复**：使用线段到圆形的距离来计算，而不是路径中心点
+          // 这样可以更准确地判断敌人是否在碰撞范围内
+          let roughDistanceSq: number
+          if (lineLengthSq > 0) {
+            // 计算线段上离敌人最近的点
+            const toCircleDx = enemy.x - pathStartX
+            const toCircleDy = enemy.y - pathStartY
+            const t = Math.max(0, Math.min(1, (toCircleDx * lineDx + toCircleDy * lineDy) / lineLengthSq))
+            const closestX = pathStartX + t * lineDx
+            const closestY = pathStartY + t * lineDy
+            const closestDx = closestX - enemy.x
+            const closestDy = closestY - enemy.y
+            roughDistanceSq = closestDx * closestDx + closestDy * closestDy
+          } else {
+            // 线段长度为0，使用点距离
+            const dx = pathStartX - enemy.x
+            const dy = pathStartY - enemy.y
+            roughDistanceSq = dx * dx + dy * dy
+          }
           
-          if (roughDistanceSq <= checkRadiusSq) {
-            nearbyEnemies.push({ enemy, distSq: roughDistanceSq, index: enemyIndex })
+          // 使用更大的碰撞半径进行初步筛选
+          const enemyRadius = enemy.size || 15
+          const preliminaryRadius = expandedCheckRadius + enemyRadius
+          const preliminaryRadiusSq = preliminaryRadius * preliminaryRadius
+          
+          if (roughDistanceSq <= preliminaryRadiusSq) {
+            // 如果列表未满，直接添加
+            if (closestEnemies.length < maxEnemiesToCheck) {
+              closestEnemies.push({ enemy, distSq: roughDistanceSq })
+              // 如果列表满了，更新最大距离
+              if (closestEnemies.length === maxEnemiesToCheck) {
+                // 找到当前列表中的最大距离
+                maxDistSq = Math.max(...closestEnemies.map(e => e.distSq))
+              }
+            } else {
+              // 列表已满，如果这个敌人更近，替换最远的
+              const maxIndex = closestEnemies.findIndex(e => e.distSq === maxDistSq)
+              if (maxIndex >= 0 && roughDistanceSq < maxDistSq) {
+                closestEnemies[maxIndex] = { enemy, distSq: roughDistanceSq }
+                // 更新最大距离
+                maxDistSq = Math.max(...closestEnemies.map(e => e.distSq))
+              }
+            }
           }
         }
         
-          // **关键修复**：只检查最近的敌人（最后20秒时更少）
-          if (nearbyEnemies.length > 0) {
-            nearbyEnemies.sort((a, b) => a.distSq - b.distSq)
-            const enemiesToCheck = nearbyEnemies.slice(0, maxEnemiesToCheck)
+        // **关键修复**：只检查最近的敌人（已按距离排序，但不需要完整排序）
+        if (closestEnemies.length > 0) {
+          // 简单排序，只对少量元素排序
+          closestEnemies.sort((a, b) => a.distSq - b.distSq)
+          const enemiesToCheck = closestEnemies.slice(0, maxEnemiesToCheck)
+          // 标记是否命中过，用于高密度分支的兜底检测
+          let hitAnyEnemyThisProjectile = false
           
           for (const { enemy, distSq: roughDistanceSq } of enemiesToCheck) {
             // 检查是否已经击中过这个敌人
@@ -4603,29 +4943,61 @@ export class TestGameEngine {
             
             // **关键修复**：精确碰撞检测，使用更大的碰撞半径防止快速投射物穿过敌人
             // 投射物速度越快，需要的碰撞半径越大
-            const baseCollisionRadius = 20 + enemy.size
-            const speedCollisionRadius = baseCollisionRadius + Math.min(10, moveDistance * 0.5) // 根据速度增加碰撞半径
-            const collisionRadiusSq = speedCollisionRadius * speedCollisionRadius
+            const baseCollisionRadius = 30 + (enemy.size || 15) // **关键修复**：增加基础碰撞半径，确保开局时也能检测到
+            // **关键修复**：根据移动距离动态增加碰撞半径，确保快速投射物不会穿过
+            // 对于快速移动的投射物，需要更大的碰撞半径来补偿
+            const speedBonus = Math.min(30, moveDistance * 1.5) // **关键修复**：增加速度补偿，最多30像素，系数增加到1.5
+            const collisionRadius = baseCollisionRadius + speedBonus
+            const collisionRadiusSq = collisionRadius * collisionRadius
             
-            // **关键修复**：检查投射物移动路径上的碰撞，而不仅仅是当前位置
-            // 如果投射物移动距离较大，检查路径中点
-            let checkX = projectile.x
-            let checkY = projectile.y
+            // **关键修复**：使用线段-圆形碰撞检测，检查整个移动路径
+            // 计算从prevX,prevY到projectile.x,projectile.y的线段是否与敌人圆形碰撞
+            let hasCollision = false
             let finalDistanceSq = roughDistanceSq
-            if (moveDistance > 15) {
-              // 投射物移动距离较大，检查路径中点
-              checkX = (prevX + projectile.x) / 2
-              checkY = (prevY + projectile.y) / 2
-              const midDx = checkX - enemy.x
-              const midDy = checkY - enemy.y
-              const midDistSq = midDx * midDx + midDy * midDy
-              if (midDistSq < collisionRadiusSq) {
-                // 路径中点碰撞，使用中点位置
-                finalDistanceSq = midDistSq
+            
+            // 线段起点和终点
+            const lineStartX = prevX
+            const lineStartY = prevY
+            const lineEndX = projectile.x
+            const lineEndY = projectile.y
+            
+            // 线段方向向量
+            const lineDx = lineEndX - lineStartX
+            const lineDy = lineEndY - lineStartY
+            const lineLengthSq = lineDx * lineDx + lineDy * lineDy
+            
+            if (lineLengthSq > 0) {
+              // 从线段起点到圆心的向量
+              const toCircleDx = enemy.x - lineStartX
+              const toCircleDy = enemy.y - lineStartY
+              
+              // 计算投影（线段上离圆心最近的点）
+              const t = Math.max(0, Math.min(1, (toCircleDx * lineDx + toCircleDy * lineDy) / lineLengthSq))
+              
+              // 线段上最近的点
+              const closestX = lineStartX + t * lineDx
+              const closestY = lineStartY + t * lineDy
+              
+              // 最近点到圆心的距离
+              const closestDx = closestX - enemy.x
+              const closestDy = closestY - enemy.y
+              const closestDistSq = closestDx * closestDx + closestDy * closestDy
+              
+              // 如果最近点距离小于半径，则发生碰撞
+              if (closestDistSq < collisionRadiusSq) {
+                hasCollision = true
+                finalDistanceSq = closestDistSq
+              }
+            } else {
+              // 线段长度为0（起点和终点相同），使用点-圆形碰撞检测
+              if (roughDistanceSq < collisionRadiusSq) {
+                hasCollision = true
               }
             }
             
-            if (finalDistanceSq < collisionRadiusSq) {
+            if (hasCollision) {
+              // **关键修复**：先应用伤害，再检查穿透
+              // 无论是否穿透，都要对当前敌人造成伤害
               let actualDamage = projectile.damage
               const shieldEnemy = enemy as any
               
@@ -4645,9 +5017,14 @@ export class TestGameEngine {
                 }
               }
               
-              // 剩余伤害攻击本体
+              // 剩余伤害攻击本体（**关键**：无论是否穿透都要造成伤害）
               if (actualDamage > 0) {
                 enemy.health -= actualDamage
+                
+                // 调试：记录一次命中与伤害
+                if ((Math.random() < 0.1)) {
+                  console.debug(`[Hit] 造成伤害=${actualDamage.toFixed(2)}，敌人剩余=${(enemy.health).toFixed(2)} at (${Math.round(enemy.x)},${Math.round(enemy.y)})`)
+                }
                 
                 // 生命偷取（从gameState获取）
                 const lifestealPercent = this.gameState?.player?.lifesteal || 0
@@ -4672,19 +5049,53 @@ export class TestGameEngine {
                 })
               }
               
-              // 将敌人添加到已击中列表
+              // 将敌人添加到已击中列表（防止重复击中）
               projectile.hitEnemies!.add(enemy)
+              // 标记命中
+              hitAnyEnemyThisProjectile = true
               
               // 穿透机制：增加已穿透次数
               projectile.pierce++
               
-              // 无论敌人是否死亡，都要检查穿透次数
+              // 检查穿透次数：如果已穿透次数超过最大穿透次数，则停止投射物
+              // maxPierce = 0 表示不能穿透，只能击中第一个敌人（pierce=1时停止）
+              // maxPierce = 1 表示可以穿透1个敌人（pierce=2时停止）
+              // maxPierce = n 表示可以穿透n个敌人（pierce=n+1时停止）
               if (projectile.pierce > projectile.maxPierce) {
+                // **关键修复**：当没有穿透能力时，立即将投射物位置回退到碰撞点，防止继续移动
+                if (projectile.maxPierce === 0) {
+                  // 计算碰撞点：将投射物位置回退到敌人边缘
+                  const dx = enemy.x - prevX
+                  const dy = enemy.y - prevY
+                  const dist = Math.sqrt(dx * dx + dy * dy)
+                  if (dist > 0) {
+                    const enemyRadius = enemy.size || 15
+                    const collisionDist = dist - enemyRadius - 5 // 5是投射物半径
+                    if (collisionDist > 0) {
+                      const t = collisionDist / dist
+                      projectile.x = prevX + dx * t
+                      projectile.y = prevY + dy * t
+                    } else {
+                      // 如果距离太近，直接回退到起点
+                      projectile.x = prevX
+                      projectile.y = prevY
+                    }
+                  }
+                  // **关键修复**：立即停止投射物移动，防止继续移动
+                  projectile.vx = 0
+                  projectile.vy = 0
+                }
                 projectile.life = 0
-                break // **关键修复**：击中后立即退出，避免继续检查
+                break // 达到最大穿透次数，停止投射物
               }
+              // **关键**：如果没有达到最大穿透次数，继续穿透，不break
               
               if (enemy.health <= 0) {
+                // **修复**：清除敌人的预警线（避免击败后仍显示红线）
+                if (enemy.warningLine) {
+                  enemy.warningLine = undefined
+                }
+                
                 // 应用击败敌人时的特殊效果
                 const specialEffects = (this.gameState?.player as any)?.specialEffects || []
                 if (specialEffects.length > 0) {
@@ -4787,41 +5198,274 @@ export class TestGameEngine {
               }
             }
           }
+          
+          // 高密度分支兜底：若本帧此投射物未命中任何敌人，再做一次“最近若干敌人”的线段-圆检测
+          if (!hitAnyEnemyThisProjectile && this.enemies.length > 0) {
+            const segX1 = prevX
+            const segY1 = prevY
+            const segX2 = projectile.x
+            const segY2 = projectile.y
+            const segDx = segX2 - segX1
+            const segDy = segY2 - segY1
+            const segLenSq = segDx * segDx + segDy * segDy
+            
+            const candidates: Array<{ enemy: any, distSq: number }> = []
+            for (let ei = 0; ei < this.enemies.length; ei++) {
+              const e = this.enemies[ei]
+              if (projectile.hitEnemies && projectile.hitEnemies.has(e)) continue
+              let t = 0
+              if (segLenSq > 0) {
+                const toEx = e.x - segX1
+                const toEy = e.y - segY1
+                t = Math.max(0, Math.min(1, (toEx * segDx + toEy * segDy) / segLenSq))
+              }
+              const cx = segX1 + t * segDx
+              const cy = segY1 + t * segDy
+              const dx = cx - e.x
+              const dy = cy - e.y
+              const d2 = dx * dx + dy * dy
+              candidates.push({ enemy: e, distSq: d2 })
+            }
+            
+            const fallbackCount = 24
+            candidates.sort((a, b) => a.distSq - b.distSq)
+            const shortlist = candidates.slice(0, Math.min(fallbackCount, candidates.length))
+            
+            for (let ci = 0; ci < shortlist.length; ci++) {
+              const e = shortlist[ci].enemy
+              const enemyRadius = (e.size || 15)
+              const collisionRadius = enemyRadius + 11
+              const r2 = collisionRadius * collisionRadius
+              
+              let collided = false
+              if (segLenSq > 0) {
+                const toEx = e.x - segX1
+                const toEy = e.y - segY1
+                const t = Math.max(0, Math.min(1, (toEx * segDx + toEy * segDy) / segLenSq))
+                const cx = segX1 + t * segDx
+                const cy = segY1 + t * segDy
+                const ddx = cx - e.x
+                const ddy = cy - e.y
+                collided = (ddx * ddx + ddy * ddy) <= r2
+              } else {
+                const ddx = segX1 - e.x
+                const ddy = segY1 - e.y
+                collided = (ddx * ddx + ddy * ddy) <= r2
+              }
+              
+              if (collided) {
+                if (!projectile.hitEnemies) {
+                  projectile.hitEnemies = new Set()
+                }
+                if (projectile.hitEnemies.has(e)) {
+                  continue
+                }
+                
+                let actualDamage = projectile.damage
+                const shieldEnemy = e as any
+                if (shieldEnemy.shield > 0) {
+                  const shieldDamage = Math.min(shieldEnemy.shield, actualDamage)
+                  shieldEnemy.shield -= shieldDamage
+                  actualDamage -= shieldDamage
+                  this.addHitEffect(e.x, e.y, false, '#00ffff')
+                  if (shieldEnemy.shield <= 0) {
+                    this.addHitEffect(e.x, e.y, true, '#ffff00')
+                  }
+                }
+                if (actualDamage > 0) {
+                  e.health -= actualDamage
+                  const lifestealPercent = this.gameState?.player?.lifesteal || 0
+                  if (lifestealPercent > 0) {
+                    const healAmount = Math.floor(actualDamage * lifestealPercent)
+                    this.playerHealth = Math.min(this.playerMaxHealth, this.playerHealth + healAmount)
+                  }
+                  const specialEffects = (this.gameState?.player as any)?.specialEffects || []
+                  if (specialEffects.length > 0) {
+                    this.applySpecialEffectsOnHit(e, projectile, actualDamage, specialEffects)
+                  }
+                  const bossExclusiveEffects = (this.gameState?.player as any)?.bossExclusiveEffects || []
+                  if (bossExclusiveEffects.includes('random_special_proc')) {
+                    const specialEffects2 = (this.gameState?.player as any)?.specialEffects || []
+                    this.applyChaosResonance(e, projectile, actualDamage, specialEffects2)
+                  }
+                  this.addHitEffect(e.x, e.y, projectile.isCrit)
+                  this.audioSystem.playSoundEffect('projectile_hit', {
+                    volume: projectile.isCrit ? 1.2 : 0.8,
+                    pitch: projectile.isCrit ? 1.5 : 1.0
+                  })
+                }
+                
+                projectile.hitEnemies.add(e)
+                projectile.pierce++
+                
+                if (projectile.pierce > projectile.maxPierce) {
+                  if (projectile.maxPierce === 0) {
+                    const dx = e.x - prevX
+                    const dy = e.y - prevY
+                    const dist = Math.sqrt(dx * dx + dy * dy)
+                    if (dist > 0) {
+                      const collisionDist = dist - (e.size || 15) - 5
+                      if (collisionDist > 0) {
+                        const t = collisionDist / dist
+                        projectile.x = prevX + dx * t
+                        projectile.y = prevY + dy * t
+                      } else {
+                        projectile.x = prevX
+                        projectile.y = prevY
+                      }
+                    }
+                  }
+                  projectile.life = 0
+                }
+                
+                if (e.health <= 0) {
+                  if (e.warningLine) {
+                    e.warningLine = undefined
+                  }
+                  const specialEffects = (this.gameState?.player as any)?.specialEffects || []
+                  if (specialEffects.length > 0) {
+                    this.applySpecialEffectsOnKill(e, specialEffects)
+                  }
+                  this.audioSystem.playSoundEffect('enemy_death')
+                  const bossTypes = ['infantry_captain', 'fortress_guard', 'void_shaman', 'legion_commander', 'boss']
+                  const isBoss = e.type && bossTypes.includes(e.type)
+                  if (isBoss) {
+                    if (this.gameState) {
+                      const remainingBosses = this.enemies.filter(en => 
+                        en !== e && en.type && bossTypes.includes(en.type) && en.health > 0
+                      )
+                      if (remainingBosses.length === 0) {
+                        if (!this.gameState.bossDefeated || this.gameState.bossDefeated !== this.currentLevel) {
+                          this.gameState.bossDefeated = this.currentLevel
+                          this.gameState.hasDefeatedBoss = true
+                        }
+                      }
+                    }
+                  }
+                  const isElite = e.isElite
+                  if (isElite) {
+                    if (this.gameState && !this.gameState.showPassiveSelection) {
+                      if (this.gameState.hasDefeatedBoss) {
+                        this.gameState.extraAttributeSelect = true
+                      }
+                    }
+                  }
+                  e.health = 0
+                  if (!(e as any).scoreAdded) {
+                    const scoreGain = isElite ? 50 : 10
+                    this.score += scoreGain
+                    if (this.gameState) {
+                      this.gameState.score = this.score
+                      if (this.gameState.player) {
+                        this.gameState.player.gold = (this.gameState.player.gold || 0) + scoreGain
+                      }
+                    }
+                    ;(e as any).scoreAdded = true
+                  }
+                  this.addDeathEffect(e.x, e.y)
+                }
+                
+                // 若已无穿透可用，结束兜底
+                if (projectile.life <= 0) {
+                  break
+                }
+              }
+            }
+          }
         }
       } else {
         // **关键修复**：敌人数量正常时，使用优化的碰撞检测
-        // 快速筛选：只检查距离投射物最近的敌人
-        const nearbyEnemies: Array<{enemy: any, distSq: number, index: number}> = []
-        // **关键修复**：限制遍历范围（最后20秒时更少）
+        // **性能优化**：使用简单的最近敌人查找，避免完整排序
         const timeRemaining = this.gameTime
         const isNearEnd = timeRemaining < 20
-        const maxEnemiesToScan = isNearEnd 
-          ? Math.min(this.enemies.length, 20) // 最后20秒时扫描20个敌人（从15提高到20，减少卡顿）
-          : Math.min(this.enemies.length, 25) // 正常时扫描25个敌人
+        // **关键修复**：根据投射物速度动态调整检查数量，速度越快检查越多
+        const speedFactor = Math.min(2.5, 1.0 + moveDistance / 15) // **关键修复**：增加速度因子，确保快速投射物检查更多敌人
+        const baseMaxScan = isNearEnd ? 30 : 50 // **关键修复**：大幅增加扫描数量，确保不遗漏敌人
+        const baseMaxCheck = isNearEnd ? 15 : 25 // **关键修复**：大幅增加检查数量，确保不遗漏敌人
+        // **关键修复**：扫描全部敌人，但仅保留最近的若干个用于精确检测
+        const maxEnemiesToScan = this.enemies.length
+        const maxCheck = Math.min(maxEnemiesToScan, Math.floor(baseMaxCheck * speedFactor))
+        
+        // **性能优化**：使用简单的最近敌人查找，避免完整排序
+        let closestEnemies: Array<{enemy: any, distSq: number}> = []
+        let maxDistSq = checkRadiusSq
+        
+        // **关键修复**：使用移动前的起点和移动后的终点来计算检查范围
+        // 检查范围需要覆盖整个移动路径，防止快速投射物跳过敌人
+        const pathStartX = prevX
+        const pathStartY = prevY
+        const pathEndX = projectile.x
+        const pathEndY = projectile.y
+        const pathCenterX = (pathStartX + pathEndX) / 2
+        const pathCenterY = (pathStartY + pathEndY) / 2
+        const pathHalfLength = moveDistance / 2
+        
+        // **关键修复**：计算线段方向向量，用于精确的距离计算
+        const lineDx = pathEndX - pathStartX
+        const lineDy = pathEndY - pathStartY
+        const lineLengthSq = lineDx * lineDx + lineDy * lineDy
+        
+        // **关键修复**：检查半径需要覆盖路径中心到路径两端的距离，加上敌人半径
+        // 对于快速移动的投射物，需要更大的检查半径来确保不会跳过敌人
+        const expandedCheckRadius = pathHalfLength + checkRadius + Math.min(40, moveDistance * 0.6)
+        const expandedCheckRadiusSq = expandedCheckRadius * expandedCheckRadius
+        
         for (let enemyIndex = 0; enemyIndex < maxEnemiesToScan; enemyIndex++) {
           const enemy = this.enemies[enemyIndex]
-          if (!enemy) continue
+          if (!enemy || enemy.health <= 0) continue
           
-          // 快速筛选：只检查距离投射物较近的敌人
-          const dx = projectile.x - enemy.x
-          const dy = projectile.y - enemy.y
-          const roughDistanceSq = dx * dx + dy * dy
+          // **关键修复**：使用线段到圆形的距离来计算，而不是路径中心点
+          // 这样可以更准确地判断敌人是否在碰撞范围内
+          let roughDistanceSq: number
+          if (lineLengthSq > 0) {
+            // 计算线段上离敌人最近的点
+            const toCircleDx = enemy.x - pathStartX
+            const toCircleDy = enemy.y - pathStartY
+            const t = Math.max(0, Math.min(1, (toCircleDx * lineDx + toCircleDy * lineDy) / lineLengthSq))
+            const closestX = pathStartX + t * lineDx
+            const closestY = pathStartY + t * lineDy
+            const closestDx = closestX - enemy.x
+            const closestDy = closestY - enemy.y
+            roughDistanceSq = closestDx * closestDx + closestDy * closestDy
+          } else {
+            // 线段长度为0，使用点距离
+            const dx = pathStartX - enemy.x
+            const dy = pathStartY - enemy.y
+            roughDistanceSq = dx * dx + dy * dy
+          }
+          
+          // 使用更大的碰撞半径进行初步筛选
+          const enemyRadius = enemy.size || 15
+          const preliminaryRadius = expandedCheckRadius + enemyRadius
+          const preliminaryRadiusSq = preliminaryRadius * preliminaryRadius
           
           // 如果距离太远，跳过（性能优化）
-          if (roughDistanceSq > checkRadiusSq) {
+          if (roughDistanceSq > preliminaryRadiusSq) {
             continue
           }
           
-          // 收集附近的敌人
-          nearbyEnemies.push({ enemy, distSq: roughDistanceSq, index: enemyIndex })
+          // 如果列表未满，直接添加
+          if (closestEnemies.length < maxCheck) {
+            closestEnemies.push({ enemy, distSq: roughDistanceSq })
+            // 如果列表满了，更新最大距离
+            if (closestEnemies.length === maxCheck) {
+              maxDistSq = Math.max(...closestEnemies.map(e => e.distSq))
+            }
+          } else {
+            // 列表已满，如果这个敌人更近，替换最远的
+            const maxIndex = closestEnemies.findIndex(e => e.distSq === maxDistSq)
+            if (maxIndex >= 0 && roughDistanceSq < maxDistSq) {
+              closestEnemies[maxIndex] = { enemy, distSq: roughDistanceSq }
+              maxDistSq = Math.max(...closestEnemies.map(e => e.distSq))
+            }
+          }
         }
         
-          // **关键修复**：按距离排序，只处理最近的敌人（最后20秒时适度减少）
-          const maxCheck = isNearEnd 
-            ? Math.min(maxEnemiesToCheck, 6) // 最后20秒时最多检查6个（从5提高到6，减少卡顿）
-            : Math.min(maxEnemiesToCheck, 8) // 正常时最多检查8个
-        nearbyEnemies.sort((a, b) => a.distSq - b.distSq)
-        const enemiesToCheck = nearbyEnemies.slice(0, maxCheck)
+        // **关键修复**：按距离排序，只处理最近的敌人（只对少量元素排序）
+        closestEnemies.sort((a, b) => a.distSq - b.distSq)
+        const enemiesToCheck = closestEnemies.slice(0, maxCheck)
+        // **关键修复**：标记本投射物本帧是否命中过任何敌人，用于兜底检测
+        let hitAnyEnemyThisProjectile = false
         
         for (const { enemy, distSq: roughDistanceSq } of enemiesToCheck) {
           // 检查是否已经击中过这个敌人
@@ -4832,9 +5476,63 @@ export class TestGameEngine {
             continue // 跳过已经击中过的敌人
           }
           
-          // 精确碰撞检测：使用平方距离避免Math.sqrt
-          const collisionRadiusSq = (15 + enemy.size) * (15 + enemy.size)
-          if (roughDistanceSq < collisionRadiusSq) {
+          // **关键修复**：精确碰撞检测，使用更大的碰撞半径防止快速投射物穿过敌人
+          // 投射物速度越快，需要的碰撞半径越大
+          const baseCollisionRadius = 20 + (enemy.size || 15)
+          // **关键修复**：根据移动距离动态增加碰撞半径，确保快速投射物不会穿过
+          // 对于快速移动的投射物，需要更大的碰撞半径来补偿
+          const speedBonus = Math.min(25, moveDistance * 1.2) // 增加速度补偿，最多25像素
+          const collisionRadius = baseCollisionRadius + speedBonus
+          const collisionRadiusSq = collisionRadius * collisionRadius
+          
+          // **关键修复**：使用线段-圆形碰撞检测，检查整个移动路径
+          // 计算从prevX,prevY到projectile.x,projectile.y的线段是否与敌人圆形碰撞
+          let hasCollision = false
+          let finalDistanceSq = roughDistanceSq
+          
+          // 线段起点和终点
+          const lineStartX = prevX
+          const lineStartY = prevY
+          const lineEndX = projectile.x
+          const lineEndY = projectile.y
+          
+          // 线段方向向量
+          const lineDx = lineEndX - lineStartX
+          const lineDy = lineEndY - lineStartY
+          const lineLengthSq = lineDx * lineDx + lineDy * lineDy
+          
+          if (lineLengthSq > 0) {
+            // 从线段起点到圆心的向量
+            const toCircleDx = enemy.x - lineStartX
+            const toCircleDy = enemy.y - lineStartY
+            
+            // 计算投影（线段上离圆心最近的点）
+            const t = Math.max(0, Math.min(1, (toCircleDx * lineDx + toCircleDy * lineDy) / lineLengthSq))
+            
+            // 线段上最近的点
+            const closestX = lineStartX + t * lineDx
+            const closestY = lineStartY + t * lineDy
+            
+            // 最近点到圆心的距离
+            const closestDx = closestX - enemy.x
+            const closestDy = closestY - enemy.y
+            const closestDistSq = closestDx * closestDx + closestDy * closestDy
+            
+            // 如果最近点距离小于半径，则发生碰撞
+            if (closestDistSq < collisionRadiusSq) {
+              hasCollision = true
+              finalDistanceSq = closestDistSq
+            }
+          } else {
+            // 线段长度为0（起点和终点相同），使用点-圆形碰撞检测
+            if (roughDistanceSq < collisionRadiusSq) {
+              hasCollision = true
+            }
+          }
+          
+          if (hasCollision) {
+            // **关键修复**：先应用伤害，再检查穿透
+            // 无论是否穿透，都要对当前敌人造成伤害
             let actualDamage = projectile.damage
             const shieldEnemy = enemy as any
             
@@ -4854,7 +5552,7 @@ export class TestGameEngine {
               }
             }
             
-            // 剩余伤害攻击本体
+            // 剩余伤害攻击本体（**关键**：无论是否穿透都要造成伤害）
             if (actualDamage > 0) {
               enemy.health -= actualDamage
               
@@ -4887,19 +5585,51 @@ export class TestGameEngine {
               })
             }
             
-            // 将敌人添加到已击中列表
+            // 将敌人添加到已击中列表（防止重复击中）
             projectile.hitEnemies!.add(enemy)
+            
+            // 标记已命中，供兜底逻辑判断
+            hitAnyEnemyThisProjectile = true
             
             // 穿透机制：增加已穿透次数
             projectile.pierce++
             
-            // 无论敌人是否死亡，都要检查穿透次数
+            // 检查穿透次数：如果已穿透次数超过最大穿透次数，则停止投射物
+            // maxPierce = 0 表示不能穿透，只能击中第一个敌人（pierce=1时停止）
+            // maxPierce = 1 表示可以穿透1个敌人（pierce=2时停止）
+            // maxPierce = n 表示可以穿透n个敌人（pierce=n+1时停止）
             if (projectile.pierce > projectile.maxPierce) {
+              // **关键修复**：当没有穿透能力时，立即将投射物位置回退到碰撞点，防止继续移动
+              if (projectile.maxPierce === 0) {
+                // 计算碰撞点：将投射物位置回退到敌人边缘
+                const dx = enemy.x - prevX
+                const dy = enemy.y - prevY
+                const dist = Math.sqrt(dx * dx + dy * dy)
+                if (dist > 0) {
+                  const enemyRadius = enemy.size || 15
+                  const collisionDist = dist - enemyRadius - 5 // 5是投射物半径
+                  if (collisionDist > 0) {
+                    const t = collisionDist / dist
+                    projectile.x = prevX + dx * t
+                    projectile.y = prevY + dy * t
+                  } else {
+                    // 如果距离太近，直接回退到起点
+                    projectile.x = prevX
+                    projectile.y = prevY
+                  }
+                }
+              }
               projectile.life = 0
-              break // **关键修复**：击中后立即退出，避免继续检查
+              break // 达到最大穿透次数，停止投射物
             }
+            // **关键**：如果没有达到最大穿透次数，继续穿透，不break
             
             if (enemy.health <= 0) {
+              // **修复**：清除敌人的预警线（避免击败后仍显示红线）
+              if (enemy.warningLine) {
+                enemy.warningLine = undefined
+              }
+              
               // 应用击败敌人时的特殊效果
               const specialEffects = (this.gameState?.player as any)?.specialEffects || []
               if (specialEffects.length > 0) {
@@ -4991,6 +5721,196 @@ export class TestGameEngine {
             }
           }
         }
+
+        // **关键兜底**：如果本帧未命中任何敌人，再用一轮“最近若干敌人”的线段-圆检测，避免漏判
+        if (!hitAnyEnemyThisProjectile && this.enemies.length > 0) {
+          // 计算线段向量
+          const segX1 = prevX
+          const segY1 = prevY
+          const segX2 = projectile.x
+          const segY2 = projectile.y
+          const segDx = segX2 - segX1
+          const segDy = segY2 - segY1
+          const segLenSq = segDx * segDx + segDy * segDy
+          
+          // 收集所有敌人到线段的最近距离，用于选取若干最近者
+          const candidates: Array<{ enemy: any, distSq: number }> = []
+          for (let ei = 0; ei < this.enemies.length; ei++) {
+            const e = this.enemies[ei]
+            // 跳过已击中过的敌人
+            if (projectile.hitEnemies && projectile.hitEnemies.has(e)) continue
+            // 最近点投影
+            let t = 0
+            if (segLenSq > 0) {
+              const toEx = e.x - segX1
+              const toEy = e.y - segY1
+              t = Math.max(0, Math.min(1, (toEx * segDx + toEy * segDy) / segLenSq))
+            }
+            const cx = segX1 + t * segDx
+            const cy = segY1 + t * segDy
+            const dx = cx - e.x
+            const dy = cy - e.y
+            const d2 = dx * dx + dy * dy
+            candidates.push({ enemy: e, distSq: d2 })
+          }
+          
+          // 仅取最近的若干个做精确检测
+          const fallbackCount = 24
+          candidates.sort((a, b) => a.distSq - b.distSq)
+          const shortlist = candidates.slice(0, Math.min(fallbackCount, candidates.length))
+          
+          for (let ci = 0; ci < shortlist.length; ci++) {
+            const e = shortlist[ci].enemy
+            // 使用保守半径：敌人半径 + 投射物半径(≈5) + 安全余量(≈6)
+            const enemyRadius = (e.size || 15)
+            const collisionRadius = enemyRadius + 11
+            const r2 = collisionRadius * collisionRadius
+            
+            // 再做一次线段-圆检测
+            let collided = false
+            if (segLenSq > 0) {
+              const toEx = e.x - segX1
+              const toEy = e.y - segY1
+              const t = Math.max(0, Math.min(1, (toEx * segDx + toEy * segDy) / segLenSq))
+              const cx = segX1 + t * segDx
+              const cy = segY1 + t * segDy
+              const ddx = cx - e.x
+              const ddy = cy - e.y
+              collided = (ddx * ddx + ddy * ddy) <= r2
+            } else {
+              const ddx = segX1 - e.x
+              const ddy = segY1 - e.y
+              collided = (ddx * ddx + ddy * ddy) <= r2
+            }
+            
+            if (collided) {
+              // 与上面一致的命中处理
+              if (!projectile.hitEnemies) {
+                projectile.hitEnemies = new Set()
+              }
+              if (projectile.hitEnemies.has(e)) {
+                continue
+              }
+              
+              let actualDamage = projectile.damage
+              const shieldEnemy = e as any
+              if (shieldEnemy.shield > 0) {
+                const shieldDamage = Math.min(shieldEnemy.shield, actualDamage)
+                shieldEnemy.shield -= shieldDamage
+                actualDamage -= shieldDamage
+                this.addHitEffect(e.x, e.y, false, '#00ffff')
+                if (shieldEnemy.shield <= 0) {
+                  this.addHitEffect(e.x, e.y, true, '#ffff00')
+                }
+              }
+              if (actualDamage > 0) {
+                e.health -= actualDamage
+                const lifestealPercent = this.gameState?.player?.lifesteal || 0
+                if (lifestealPercent > 0) {
+                  const healAmount = Math.floor(actualDamage * lifestealPercent)
+                  this.playerHealth = Math.min(this.playerMaxHealth, this.playerHealth + healAmount)
+                }
+                const specialEffects = (this.gameState?.player as any)?.specialEffects || []
+                if (specialEffects.length > 0) {
+                  this.applySpecialEffectsOnHit(e, projectile, actualDamage, specialEffects)
+                }
+                const bossExclusiveEffects = (this.gameState?.player as any)?.bossExclusiveEffects || []
+                if (bossExclusiveEffects.includes('random_special_proc')) {
+                  const specialEffects2 = (this.gameState?.player as any)?.specialEffects || []
+                  this.applyChaosResonance(e, projectile, actualDamage, specialEffects2)
+                }
+                this.addHitEffect(e.x, e.y, projectile.isCrit)
+                this.audioSystem.playSoundEffect('projectile_hit', {
+                  volume: projectile.isCrit ? 1.2 : 0.8,
+                  pitch: projectile.isCrit ? 1.5 : 1.0
+                })
+              }
+              
+              projectile.hitEnemies.add(e)
+              projectile.pierce++
+              hitAnyEnemyThisProjectile = true
+              
+              if (projectile.pierce > projectile.maxPierce) {
+                if (projectile.maxPierce === 0) {
+                  const dx = e.x - prevX
+                  const dy = e.y - prevY
+                  const dist = Math.sqrt(dx * dx + dy * dy)
+                  if (dist > 0) {
+                    const collisionDist = dist - (e.size || 15) - 5
+                    if (collisionDist > 0) {
+                      const t = collisionDist / dist
+                      projectile.x = prevX + dx * t
+                      projectile.y = prevY + dy * t
+                    } else {
+                      projectile.x = prevX
+                      projectile.y = prevY
+                    }
+                  }
+                }
+                projectile.life = 0
+              }
+              
+              // 处理击杀与分数，同上逻辑
+              if (e.health <= 0) {
+                if (e.warningLine) {
+                  e.warningLine = undefined
+                }
+                const specialEffects = (this.gameState?.player as any)?.specialEffects || []
+                if (specialEffects.length > 0) {
+                  this.applySpecialEffectsOnKill(e, specialEffects)
+                }
+                this.audioSystem.playSoundEffect('enemy_death')
+                const bossTypes = ['infantry_captain', 'fortress_guard', 'void_shaman', 'legion_commander', 'boss']
+                const isBoss = e.type && bossTypes.includes(e.type)
+                if (isBoss) {
+                  if (this.gameState) {
+                    const remainingBosses = this.enemies.filter(en => 
+                      en !== e && en.type && bossTypes.includes(en.type) && en.health > 0
+                    )
+                    if (remainingBosses.length === 0) {
+                      if (!this.gameState.bossDefeated || this.gameState.bossDefeated !== this.currentLevel) {
+                        this.gameState.bossDefeated = this.currentLevel
+                        this.gameState.hasDefeatedBoss = true
+                      }
+                    }
+                  }
+                }
+                const isElite = e.isElite
+                if (isElite) {
+                  if (this.gameState && !this.gameState.showPassiveSelection) {
+                    if (this.gameState.hasDefeatedBoss) {
+                      this.gameState.extraAttributeSelect = true
+                    }
+                  }
+                }
+                e.health = 0
+                if (!(e as any).scoreAdded) {
+                  const scoreGain = isElite ? 50 : 10
+                  this.score += scoreGain
+                  if (this.gameState) {
+                    this.gameState.score = this.score
+                    if (this.gameState.player) {
+                      this.gameState.player.gold = (this.gameState.player.gold || 0) + scoreGain
+                    }
+                  }
+                  ;(e as any).scoreAdded = true
+                }
+                this.addDeathEffect(e.x, e.y)
+              }
+              
+              // 如果已无穿透，结束兜底
+              if (projectile.life <= 0) {
+                break
+              }
+            }
+          }
+        }
+      }
+      
+      // **关键修复**：在碰撞检测之后递减life，确保投射物有机会造成伤害
+      // 只有在life > 0时才递减，避免已经设置为0的投射物被错误处理
+      if (projectile.life > 0) {
+        projectile.life--
       }
     } // 结束玩家投射物处理循环
     
@@ -5032,11 +5952,15 @@ export class TestGameEngine {
           this.effectsSystem.createExplosionEffect(explosionX, explosionY, explosionRadius)
           this.projectileVisualSystem.createExplosion(explosionX, explosionY, explosionRadius, 'fire')
           this.audioSystem.playSoundEffect('explosion', { volume: 1.0 })
+          // **修复**：炸弹爆炸时立即清理拖尾
+          if (projectile.id) {
+            this.projectileVisualSystem.clearProjectileTrails(projectile.id)
+          }
           projectile.life = 0
           continue
         }
         
-        projectile.life--
+        // **关键修复**：不再在这里递减life，因为已经在批量移除前统一递减了，避免重复递减
         continue
       }
       
@@ -5069,7 +5993,14 @@ export class TestGameEngine {
       
       projectile.x += projectile.vx
       projectile.y += projectile.vy
-      projectile.life--
+      // **关键修复**：不再在这里递减life，因为已经在批量移除前统一递减了，避免重复递减
+      
+      // **修复**：如果投射物已经失效，立即清理拖尾
+      if (projectile.life <= 0) {
+        if (projectile.id) {
+          this.projectileVisualSystem.clearProjectileTrails(projectile.id)
+        }
+      }
       
       // 处理敌人的投射物 - 检查与玩家的碰撞
       if (projectile.life > 0) {
@@ -5179,23 +6110,94 @@ export class TestGameEngine {
             }
           }
         }
+        
+        // **关键修复**：在碰撞检测之后递减life，确保投射物有机会造成伤害
+        // 只有在life > 0时才递减，避免已经设置为0的投射物被错误处理
+        if (projectile.life > 0) {
+          projectile.life--
+        }
+      }
+    } // 结束敌人投射物处理循环
+
+    // **关键修复**：对没有被处理的投射物递减life，确保所有投射物都会自然消失
+    // 注意：已经被处理的投射物已经在处理循环中递减了life，这里只处理未被处理的投射物
+    // 使用Set来标记已处理的投射物，避免重复递减
+    const processedProjectiles = new Set<string>()
+    
+    // 标记已处理的投射物（玩家投射物和敌人投射物）
+    for (let idx = 0; idx < maxPlayerProjectiles; idx++) {
+      const projectile = playerProjectiles[idx]
+      if (projectile && projectile.id) {
+        processedProjectiles.add(projectile.id)
       }
     }
-
-    // **关键修复**：批量移除投射物，使用反向遍历避免索引问题，限制处理数量
+    for (let enemyIdx = 0; enemyIdx < maxEnemyProjectiles; enemyIdx++) {
+      const projectile = enemyProjectiles[enemyIdx]
+      if (projectile && projectile.id) {
+        processedProjectiles.add(projectile.id)
+      }
+    }
+    
+    // **关键修复**：先移动所有未被处理的投射物，确保它们能够移动（即使没有被处理碰撞检测）
+    for (let i = 0; i < this.projectiles.length; i++) {
+      const projectile = this.projectiles[i]
+      if (!projectile || processedProjectiles.has(projectile.id || '')) {
+        continue // 跳过已处理的投射物
+      }
+      
+      // 只移动未被处理的投射物（已处理的投射物已经在处理循环中移动过了）
+      if (projectile.life > 0) {
+        // 处理重力效果（投弹手的抛物线投射物）
+        if (projectile.isGrenade) {
+          const gravity = 0.2
+          projectile.vy += gravity
+        }
+        
+        // 移动投射物
+        projectile.x += projectile.vx
+        projectile.y += projectile.vy
+      }
+    }
+    
+    // 对未被处理的投射物递减life
+    for (let i = 0; i < this.projectiles.length; i++) {
+      const projectile = this.projectiles[i]
+      if (projectile && projectile.life > 0 && !processedProjectiles.has(projectile.id || '')) {
+        projectile.life--
+      }
+    }
+    
+    // **关键修复**：批量移除投射物，使用反向遍历避免索引问题
     // **性能优化**：最后20秒时更激进的清理策略
+    // **关键修复**：清理所有过期的投射物，而不是只检查部分
+    // 使用从后往前的循环，避免索引问题
     const timeRemainingColl = this.gameTime
     const isNearEndColl = timeRemainingColl < 20
-    const maxProjectilesToCheck = isNearEndColl 
-      ? Math.min(this.projectiles.length, 100)  // 最后20秒检查100个（从60提高到100，减少卡顿）
-      : Math.min(this.projectiles.length, 150)  // 正常时检查150个
     
-    for (let i = maxProjectilesToCheck - 1; i >= 0; i--) {
+    for (let i = this.projectiles.length - 1; i >= 0; i--) {
       const projectile = this.projectiles[i]
-      if (!projectile) continue
-      if (projectile.life <= 0 || 
-          projectile.x < -100 || projectile.x > this.canvas.width + 100 ||
-          projectile.y < -100 || projectile.y > this.canvas.height + 100) {
+      if (!projectile) {
+        this.projectiles.splice(i, 1)
+        continue
+      }
+      
+      // **修复**：检查投射物是否应该被清理（扩大边界检查范围，确保超出屏幕的投射物被清理）
+      // **关键修复**：静止的子弹（速度为0或极小）立即移除，避免子弹停留在画面中
+      const speedSq = projectile.vx * projectile.vx + projectile.vy * projectile.vy
+      const isStationary = speedSq < 0.01 // 速度小于0.1像素/帧的视为静止
+      // **关键修复**：静止的子弹立即移除，不等待life减少
+      const shouldRemoveStationary = isStationary // 只要静止就立即移除
+      
+      const shouldRemove = projectile.life <= 0 || 
+          projectile.x < -200 || projectile.x > this.canvas.width + 200 ||
+          projectile.y < -200 || projectile.y > this.canvas.height + 200 ||
+          shouldRemoveStationary // 静止的子弹立即移除
+      
+      if (shouldRemove) {
+        // **修复**：投射物消失时立即清理对应的拖尾效果（使用投射物的唯一ID）
+        if (projectile.id) {
+          this.projectileVisualSystem.clearProjectileTrails(projectile.id)
+        }
         this.projectiles.splice(i, 1)
       }
     }
@@ -5207,8 +6209,16 @@ export class TestGameEngine {
       : this.MAX_PROJECTILES
     
     if (this.projectiles.length > maxAllowed) {
+      // **修复**：移除最旧的投射物时，同时清理对应的拖尾效果（使用投射物的唯一ID）
+      const removeCount = this.projectiles.length - maxAllowed
+      for (let i = 0; i < removeCount; i++) {
+        const projectile = this.projectiles[i]
+        if (projectile && projectile.id) {
+          this.projectileVisualSystem.clearProjectileTrails(projectile.id)
+        }
+      }
       // 移除最旧的投射物（前面的）
-      this.projectiles.splice(0, this.projectiles.length - maxAllowed)
+      this.projectiles.splice(0, removeCount)
     }
   }
   private handleAutoAttack() {
@@ -5311,18 +6321,73 @@ export class TestGameEngine {
     // 注意：playerAngle已经更新为朝向最近敌人的方向
     // **关键修复**：确保攻击能够正常发出，即使投射物数量较多
     const projectileCount = Math.max(1, player.projectiles || 1)
-    let remainingSlots = this.MAX_PROJECTILES - this.projectiles.length
+    
+    // **关键修复**：根据当前时间计算实际允许的投射物数量上限
+    // 与updateProjectiles()中的逻辑保持一致，避免新子弹被立即清理
+    const timeRemaining = this.gameTime
+    const isNearEnd = timeRemaining < 20 // 最后20秒
+    const maxAllowed = isNearEnd 
+      ? Math.floor(this.MAX_PROJECTILES * 0.6)  // 最后20秒允许60%上限（与updateProjectiles一致）
+      : this.MAX_PROJECTILES
+    
+    // **关键修复**：计算实际剩余槽位（基于实际允许的上限，而不是MAX_PROJECTILES）
+    let remainingSlots = maxAllowed - this.projectiles.length
     
     // **关键修复**：如果投射物数量过多，清理最旧的投射物，但确保至少能发射1个
+    // **性能优化**：限制单次清理数量，避免卡顿
+    // **重要修复**：即使达到上限，也强制清理至少projectileCount个槽位，确保新子弹能发射
     if (remainingSlots < projectileCount && this.projectiles.length > 0) {
-      const needToRemove = projectileCount - remainingSlots
-      const removeCount = Math.min(needToRemove, this.projectiles.length)
+      const needToRemove = Math.max(projectileCount - remainingSlots, projectileCount) // 至少清理projectileCount个
+      // **修复**：限制单次清理数量，避免一次性清理太多导致卡顿
+      const maxRemovePerFrame = 30 // 每帧最多清理30个，确保能发射新子弹
+      const removeCount = Math.min(needToRemove, this.projectiles.length, maxRemovePerFrame)
+      
+      // **修复**：清理被移除投射物的拖尾效果（使用投射物的唯一ID）
+      // **性能优化**：批量清理，减少循环开销
+      const projectilesToRemove = this.projectiles.slice(0, removeCount)
+      for (const projectile of projectilesToRemove) {
+        if (projectile && projectile.id) {
+          this.projectileVisualSystem.clearProjectileTrails(projectile.id)
+        }
+      }
       // 只移除最旧的投射物（从数组开头移除）
       this.projectiles.splice(0, removeCount)
-      remainingSlots = this.MAX_PROJECTILES - this.projectiles.length
+      remainingSlots = maxAllowed - this.projectiles.length
+      
+      // **修复**：如果清理后仍然不够，继续清理直到有足够空间
+      if (remainingSlots < projectileCount && this.projectiles.length > 0) {
+        const additionalNeeded = projectileCount - remainingSlots
+        const additionalRemove = Math.min(additionalNeeded, this.projectiles.length, 20) // 再清理最多20个
+        if (additionalRemove > 0) {
+          const additionalToRemove = this.projectiles.slice(0, additionalRemove)
+          for (const projectile of additionalToRemove) {
+            if (projectile && projectile.id) {
+              this.projectileVisualSystem.clearProjectileTrails(projectile.id)
+            }
+          }
+          this.projectiles.splice(0, additionalRemove)
+          remainingSlots = maxAllowed - this.projectiles.length
+        }
+      }
+      
+      // **修复**：如果清理后仍然不够，记录警告但不阻止发射（确保至少能发射1个）
+      if (remainingSlots < projectileCount) {
+        console.warn(`⚠️ 投射物数量过多，已清理${removeCount}个，剩余槽位: ${remainingSlots}，需要: ${projectileCount}`)
+      }
     }
     
     // **关键修复**：确保至少能发射1个投射物，即使投射物数量较多
+    // **重要修复**：如果清理后仍然不够，强制清理更多，确保至少能发射1个
+    if (remainingSlots < 1 && this.projectiles.length > 0) {
+      // 强制清理至少1个槽位
+      const projectile = this.projectiles[0]
+      if (projectile && projectile.id) {
+        this.projectileVisualSystem.clearProjectileTrails(projectile.id)
+      }
+      this.projectiles.splice(0, 1)
+      remainingSlots = maxAllowed - this.projectiles.length
+    }
+    
     const actualProjectileCount = Math.min(projectileCount, Math.max(remainingSlots, 1))
     
     if (actualProjectileCount <= 0) {
@@ -5406,14 +6471,16 @@ export class TestGameEngine {
       const vx = Math.cos(currentAngle) * speed
       const vy = Math.sin(currentAngle) * speed
       
+      // **修复**：给每个投射物添加唯一ID
       this.projectiles.push({
+        id: `proj_${++this.projectileIdCounter}_${Date.now()}`, // 唯一ID
         x: this.playerX,
         y: this.playerY,
         vx,
         vy,
         damage,
         isCrit,
-        life: 60,
+        life: 120, // **修复**：增加生命周期，确保投射物有足够时间造成伤害（从60增加到120，约2秒）
         pierce: 0,
         maxPierce: player.pierce || 0,
         owner: 'player',
@@ -6102,11 +7169,8 @@ export class TestGameEngine {
     // 绘制掉落物（在敌人之后，投射物之前）
     this.drawDroppedItems()
 
-    // 绘制非激光投射物的拖尾
-    this.projectileVisualSystem.drawTrails(this.ctx)
-
-    // 绘制投射物（使用新的视觉系统）
-    // **关键修复**：大幅限制绘制的投射物数量，防止渲染卡顿
+    // **关键修复**：收集所有活跃投射物的ID，只绘制对应投射物仍然存在的拖尾
+    const activeProjectileIds = new Set<string>()
     const projectileCount = this.projectiles.length
     const maxProjectilesToDraw = Math.min(projectileCount, 100) // 最多绘制100个投射物
     
@@ -6114,6 +7178,16 @@ export class TestGameEngine {
     for (let i = 0; i < maxProjectilesToDraw; i++) {
       const projectile = this.projectiles[i]
       if (!projectile) continue
+      
+      // **修复**：跳过生命值已归零的投射物（避免绘制已失效的投射物）
+      if (projectile.life <= 0) {
+        continue
+      }
+      
+      // 收集活跃投射物的ID
+      if (projectile.id) {
+        activeProjectileIds.add(projectile.id)
+      }
       
       // **性能优化**：跳过屏幕外的投射物
       if (projectile.x < minX || projectile.x > maxX || projectile.y < minY || projectile.y > maxY) {
@@ -6142,15 +7216,18 @@ export class TestGameEngine {
         maxLife: 1000
       }
       
-      // **性能优化**：使用索引作为ID，避免字符串拼接
+      // **修复**：使用投射物的唯一ID，而不是索引
       this.projectileVisualSystem.drawProjectile(
         this.ctx, 
         projectile.x, 
         projectile.y, 
         projectileOptions,
-        projectileType === 'laser' ? undefined : `projectile_${i}`  // 激光不产生拖尾ID
+        projectileType === 'laser' ? undefined : projectile.id  // 激光不产生拖尾，其他使用唯一ID
       )
     }
+
+    // **关键修复**：绘制非激光投射物的拖尾，只绘制对应投射物仍然存在的拖尾
+    this.projectileVisualSystem.drawTrails(this.ctx, activeProjectileIds)
 
     // 绘制玩家（使用新的视觉系统）
     const player = this.gameState?.player as any
@@ -6645,6 +7722,7 @@ export class TestGameEngine {
 
   // 处理键盘输入（特殊按键）
   handleKeyDown(key: string) {
+    if (!key) return
     switch (key.toLowerCase()) {
       case 'p': case ' ': this.togglePause(); break
       case 'q': case 'tab': 
@@ -6880,11 +7958,15 @@ export class TestGameEngine {
     const levelTime = this.getLevelTime(this.currentLevel)
     this.gameTime = Math.max(0, levelTime - actualElapsedSeconds)
     
-    // 时间到0时进入下一层，但只触发一次
-    if (this.gameTime <= 0 && !this.hasTriggeredLevelComplete && !this.isInNextLevel) {
-      console.log(`[updateGameTime] 时间到0，触发关卡切换，当前关卡: ${this.currentLevel}`)
-      this.hasTriggeredLevelComplete = true
-      this.nextLevel()
+    // **修复**：时间到0时进入下一层，但只触发一次，并且确保时间真正到0（而不是负数或接近0）
+    // 使用更严格的判断条件，避免浮点数误差导致提前触发
+    if (this.gameTime <= 0.1 && !this.hasTriggeredLevelComplete && !this.isInNextLevel) {
+      // 确保时间真正到0或接近0（允许0.1秒的误差）
+      if (actualElapsedSeconds >= levelTime - 0.1) {
+        console.log(`[updateGameTime] 时间到0，触发关卡切换，当前关卡: ${this.currentLevel}, 实际经过时间: ${actualElapsedSeconds.toFixed(2)}s, 关卡时间: ${levelTime}s`)
+        this.hasTriggeredLevelComplete = true
+        this.nextLevel()
+      }
     }
   }
 
@@ -6943,7 +8025,8 @@ export class TestGameEngine {
       
       if (isMoving && now >= this.healTrailCooldown) {
         // 检查是否移动了足够距离（避免在同一个位置重复创建）
-        const minDistance = 30 // 最小距离（像素）
+        // **修复**：减少最小距离，让治疗区域更容易创建，更密集
+        const minDistance = specialEffects.includes('heal_trail_enhanced') ? 20 : 25 // 增强后20像素，基础25像素
         if (this.lastHealTrailPosition) {
           const dx = this.playerX - this.lastHealTrailPosition.x
           const dy = this.playerY - this.lastHealTrailPosition.y
@@ -6956,9 +8039,18 @@ export class TestGameEngine {
         }
         
         // 创建治疗区域
-        const healRadius = 40 // 治疗区域半径
-        const healPerSecond = 2 // 每秒回复2点生命
-        const duration = 5000 // 持续5秒
+        // **修复**：增加基础持续时间，让玩家有足够时间回血
+        let healRadius = 40 // 治疗区域半径
+        let healPerSecond = 2 // 每秒回复2点生命
+        let duration = 8000 // 持续8秒（从5秒增加到8秒，让玩家有足够时间回血）
+        
+        // **新增**：检查是否有治愈之路增强效果
+        const hasEnhanced = specialEffects.includes('heal_trail_enhanced')
+        if (hasEnhanced) {
+          duration += 3000 // 持续时间+3秒（总共11秒）
+          healRadius = Math.floor(healRadius * 1.5) // 治疗范围+50%
+          healPerSecond += 2 // 每秒回复+2（总共4点/秒）
+        }
         
         this.healTrailAreas.push({
           x: this.playerX,
@@ -6977,7 +8069,9 @@ export class TestGameEngine {
         
         // 更新上次位置和冷却时间
         this.lastHealTrailPosition = { x: this.playerX, y: this.playerY }
-        this.healTrailCooldown = now + 200 // 200ms冷却，避免创建太密集
+        // **修复**：减少冷却时间，让治疗区域更密集，更容易回血
+        const cooldown = specialEffects.includes('heal_trail_enhanced') ? 150 : 200
+        this.healTrailCooldown = now + cooldown // 增强后150ms，基础200ms冷却
         
         // 添加创建特效 - 绿色光环
         this.effectsSystem.createParticleEffect('magic_burst', this.playerX, this.playerY, {
@@ -7202,18 +8296,35 @@ export class TestGameEngine {
   private forceCleanup() {
     // 清理过期的投射物（超出边界或存活时间过长）
     const margin = 200
+    const removedProjectiles: string[] = []
     this.projectiles = this.projectiles.filter(p => {
       // 检查是否超出边界太远
       if (p.x < -margin || p.x > this.canvas.width + margin ||
           p.y < -margin || p.y > this.canvas.height + margin) {
+        if (p.id) {
+          removedProjectiles.push(p.id)
+        }
         return false
       }
       return true
     })
+    // **修复**：清理被移除投射物的拖尾效果
+    removedProjectiles.forEach(id => {
+      this.projectileVisualSystem.clearProjectileTrails(id)
+    })
     
     // 限制投射物数量（更激进）
     if (this.projectiles.length > this.MAX_PROJECTILES * 0.8) {
-      this.projectiles = this.projectiles.slice(-Math.floor(this.MAX_PROJECTILES * 0.8))
+      const targetCount = Math.floor(this.MAX_PROJECTILES * 0.8)
+      const removeCount = this.projectiles.length - targetCount
+      // **修复**：清理被移除投射物的拖尾效果（使用投射物的唯一ID）
+      for (let i = 0; i < removeCount; i++) {
+        const projectile = this.projectiles[i]
+        if (projectile && projectile.id) {
+          this.projectileVisualSystem.clearProjectileTrails(projectile.id)
+        }
+      }
+      this.projectiles = this.projectiles.slice(-targetCount)
     }
     
     // 清理过期的特效

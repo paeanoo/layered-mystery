@@ -25,6 +25,22 @@
           </div>
         </div>
 
+        <!-- 金币修改区域 -->
+        <div class="section">
+          <h3 class="section-title">金币修改</h3>
+          <div class="level-input-group">
+            <label for="target-gold">金币数量:</label>
+            <input 
+              id="target-gold"
+              v-model.number="targetGold" 
+              type="number" 
+              min="0"
+              class="level-input"
+            />
+            <button class="btn btn-primary" @click="setGold">设置金币</button>
+          </div>
+        </div>
+
         <!-- 角色属性设置区域 -->
         <div class="section">
           <h3 class="section-title">角色属性设置</h3>
@@ -112,6 +128,7 @@ interface Emits {
   (e: 'close'): void
   (e: 'jumpToLevel', level: number): void
   (e: 'applyAttributes', attributes: PlayerState): void
+  (e: 'setGold', gold: number): void
 }
 
 const props = defineProps<Props>()
@@ -119,6 +136,9 @@ const emit = defineEmits<Emits>()
 
 // 目标关卡
 const targetLevel = ref(1)
+
+// 目标金币
+const targetGold = ref(0)
 
 // 角色属性
 const attributes = ref<PlayerState>({
@@ -188,6 +208,8 @@ watch(() => props.playerStats, (newStats) => {
     // 同步百分比显示值
     critChancePercent.value = (newStats.critChance || 0) * 100
     lifestealPercent.value = (newStats.lifesteal || 0) * 100
+    // 同步金币
+    targetGold.value = newStats.gold || 0
   }
 }, { immediate: true })
 
@@ -200,6 +222,13 @@ const closeModal = () => {
 const jumpToLevel = () => {
   if (targetLevel.value >= 1) {
     emit('jumpToLevel', targetLevel.value)
+  }
+}
+
+// 设置金币
+const setGold = () => {
+  if (targetGold.value >= 0) {
+    emit('setGold', targetGold.value)
   }
 }
 

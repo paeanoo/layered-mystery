@@ -249,35 +249,92 @@ export class SimpleGameEngine {
   }
 
   private updateProjectiles(deltaTime: number) {
-    this.projectiles.forEach((projectile, index) => {
+    // 线段-圆碰撞，避免高速子弹穿过敌人
+    const segmentIntersectsCircle = (
+      x1: number, y1: number,
+      x2: number, y2: number,
+      cx: number, cy: number,
+      r: number
+    ): boolean => {
+      const dx = x2 - x1
+      const dy = y2 - y1
+      const fx = x1 - cx
+      const fy = y1 - cy
+
+      const a = dx * dx + dy * dy
+      // 静止情况下退化为点-圆判断
+      if (a === 0) {
+        const distSq = fx * fx + fy * fy
+        return distSq <= r * r
+      }
+
+      const b = 2 * (fx * dx + fy * dy)
+      const c = fx * fx + fy * fy - r * r
+
+      let t = -b / (2 * a)
+      // 最近点投影到线段上
+      t = Math.max(0, Math.min(1, t))
+
+      const closestX = x1 + t * dx
+      const closestY = y1 + t * dy
+      const ddx = closestX - cx
+      const ddy = closestY - cy
+      return (ddx * ddx + ddy * ddy) <= r * r
+    }
+
+    const nextProjectiles: Projectile[] = []
+
+    for (let i = 0; i < this.projectiles.length; i++) {
+      const projectile = this.projectiles[i]
+
+      const prevX = projectile.x
+      const prevY = projectile.y
+
+      // 更新位置
       projectile.x += projectile.vx * deltaTime / 1000
       projectile.y += projectile.vy * deltaTime / 1000
 
-      // 检查与敌人的碰撞
-      this.enemies.forEach((enemy, enemyIndex) => {
-        const distance = Math.sqrt(
-          (projectile.x - enemy.x) ** 2 + (projectile.y - enemy.y) ** 2
+      // 超界丢弃
+      if (
+        projectile.x < 0 ||
+        projectile.x > this.canvas.width ||
+        projectile.y < 0 ||
+        projectile.y > this.canvas.height
+      ) {
+        continue
+      }
+
+      const projectileRadius = 5 // 与渲染半径保持一致
+      let consumed = false
+
+      // 检查与敌人的碰撞（使用线段-圆避免穿透）
+      for (let enemyIndex = 0; enemyIndex < this.enemies.length; enemyIndex++) {
+        const enemy = this.enemies[enemyIndex]
+        const hit = segmentIntersectsCircle(
+          prevX, prevY,
+          projectile.x, projectile.y,
+          enemy.x, enemy.y,
+          enemy.size + projectileRadius
         )
-        if (distance < projectile.damage + enemy.size) {
-          // 造成伤害
+        if (hit) {
           enemy.health -= projectile.damage
-          this.projectiles.splice(index, 1)
-          
+          consumed = true
+
           if (enemy.health <= 0) {
             this.enemies.splice(enemyIndex, 1)
             this.gameState.score += 10 + this.gameState.level * 5
+            enemyIndex--
           }
+          break
         }
-      })
-    })
+      }
 
-    // 移除超出边界的投射物
-    this.projectiles = this.projectiles.filter(projectile => {
-      return projectile.x >= 0 && 
-             projectile.x <= this.canvas.width &&
-             projectile.y >= 0 && 
-             projectile.y <= this.canvas.height
-    })
+      if (!consumed) {
+        nextProjectiles.push(projectile)
+      }
+    }
+
+    this.projectiles = nextProjectiles
   }
 
   private handlePlayerAttack(deltaTime: number) {

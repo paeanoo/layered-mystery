@@ -134,16 +134,16 @@ export function generateShopRewards(layer: number, ctx?: RewardContext): Generat
   // 更高层出现高阶道具的概率更大，但所有品质都有几率出现
   let greenProb = 0.70
   let blueProb = 0.25
-  let purpleProb = 0.05
-  let goldProb = 0
-  let shopCount = 3
+  let purpleProb = 0.04
+  let goldProb = 0.01
+  let shopCount = 4
 
   if (layer >= 51) {
     greenProb = 0.10
     blueProb = 0.20
     purpleProb = 0.50
     goldProb = 0.20
-    shopCount = 5
+    shopCount = 4
   } else if (layer >= 41) {
     greenProb = 0.15
     blueProb = 0.25
@@ -167,49 +167,148 @@ export function generateShopRewards(layer: number, ctx?: RewardContext): Generat
     blueProb = 0.40
     purpleProb = 0.18
     goldProb = 0.02
-    shopCount = 3
+    shopCount = 4
   } else if (layer >= 11) {
     greenProb = 0.50
     blueProb = 0.40
     purpleProb = 0.09
     goldProb = 0.01
-    shopCount = 3
+    shopCount = 4
   } else if (layer >= 6) {
     greenProb = 0.65
     blueProb = 0.30
-    purpleProb = 0.05
-    goldProb = 0
-    shopCount = 3
+    purpleProb = 0.04
+    goldProb = 0.01
+    shopCount = 4
+  } else {
+    // 1-5层：所有品质都有概率，但绿色概率最高
+    greenProb = 0.75
+    blueProb = 0.20
+    purpleProb = 0.04
+    goldProb = 0.01
+    shopCount = 4
   }
 
-  const results: GeneratedReward[] = []
+  const results: (GeneratedReward | null)[] = []
   const exclude = new Set<string>(ctx?.recentOfferedIds || [])
 
+  // **关键修复**：确保生成足够数量的道具，如果某个品质池为空或被排除，尝试其他品质
+  // 即使生成失败也要返回null，确保总数始终是shopCount
   for (let i = 0; i < shopCount; i++) {
-    const rand = Math.random()
-    let pool: RewardOption[] = []
+    let attempts = 0
+    const maxAttempts = 50 // 增加尝试次数
+    let success = false
+    let generatedItem: GeneratedReward | null = null
     
-    if (rand < greenProb) {
-      pool = ATTRIBUTE_REWARDS.filter(r => r.color === 'green')
-    } else if (rand < greenProb + blueProb) {
-      pool = SPECIAL_REWARDS.filter(r => r.color === 'blue')
-    } else if (rand < greenProb + blueProb + purpleProb) {
-      pool = EPIC_REWARDS.filter(r => r.color === 'purple')
-    } else {
-      pool = LEGENDARY_REWARDS
-    }
+    while (attempts < maxAttempts && !success) {
+      const rand = Math.random()
+      let pool: RewardOption[] = []
+      
+      if (rand < greenProb) {
+        pool = ATTRIBUTE_REWARDS.filter(r => r.color === 'green')
+      } else if (rand < greenProb + blueProb) {
+        pool = SPECIAL_REWARDS.filter(r => r.color === 'blue')
+      } else if (rand < greenProb + blueProb + purpleProb) {
+        pool = EPIC_REWARDS.filter(r => r.color === 'purple')
+      } else {
+        pool = LEGENDARY_REWARDS
+      }
 
-    if (pool.length > 0) {
-      const picked = weightedSample(pool, 1, exclude, (opt) => synergyAdjust(opt, ctx))
-      if (picked.length > 0) {
-        const opt = picked[0]
-        results.push({
-          option: opt,
-          scaledValue: pickTierValue(opt, layer)
-        })
-        exclude.add(opt.id)
+      if (pool.length > 0) {
+        const picked = weightedSample(pool, 1, exclude, (opt) => synergyAdjust(opt, ctx))
+        if (picked.length > 0) {
+          const opt = picked[0]
+          generatedItem = {
+            option: opt,
+            scaledValue: pickTierValue(opt, layer)
+          }
+          exclude.add(opt.id)
+          success = true
+        }
+      }
+      
+      // 如果当前品质池失败，尝试其他品质池（按优先级：绿色 -> 蓝色 -> 紫色 -> 金色）
+      if (!success) {
+        const fallbackPools = [
+          ATTRIBUTE_REWARDS.filter(r => r.color === 'green'),
+          SPECIAL_REWARDS.filter(r => r.color === 'blue'),
+          EPIC_REWARDS.filter(r => r.color === 'purple'),
+          LEGENDARY_REWARDS
+        ]
+        
+        for (const fallbackPool of fallbackPools) {
+          if (fallbackPool.length > 0) {
+            const picked = weightedSample(fallbackPool, 1, exclude, (opt) => synergyAdjust(opt, ctx))
+            if (picked.length > 0) {
+              const opt = picked[0]
+              generatedItem = {
+                option: opt,
+                scaledValue: pickTierValue(opt, layer)
+              }
+              exclude.add(opt.id)
+              success = true
+              break
+            }
+          }
+        }
+      }
+      
+      attempts++
+    }
+    
+    // **关键修复**：如果生成失败，继续尝试直到成功（最多尝试100次）
+    if (success && generatedItem) {
+      results.push(generatedItem)
+    } else {
+      // 如果所有尝试都失败，强制从绿色品质池中生成一个（确保总是有道具）
+      console.warn(`[generateShopRewards] 警告：第${layer}层商店第${i+1}个道具生成失败（尝试${attempts}次），强制从绿色池生成`)
+      const greenPool = ATTRIBUTE_REWARDS.filter(r => r.color === 'green')
+      if (greenPool.length > 0) {
+        // 不排除任何ID，强制生成
+        const forcedPicked = weightedSample(greenPool, 1, new Set(), (opt) => synergyAdjust(opt, ctx))
+        if (forcedPicked.length > 0) {
+          const opt = forcedPicked[0]
+          generatedItem = {
+            option: opt,
+            scaledValue: pickTierValue(opt, layer)
+          }
+          exclude.add(opt.id)
+          results.push(generatedItem)
+        } else {
+          // 如果还是失败，随机选择一个绿色道具
+          const randomGreen = greenPool[Math.floor(Math.random() * greenPool.length)]
+          if (randomGreen) {
+            generatedItem = {
+              option: randomGreen,
+              scaledValue: pickTierValue(randomGreen, layer)
+            }
+            exclude.add(randomGreen.id)
+            results.push(generatedItem)
+          }
+        }
       }
     }
+  }
+
+  // **关键修复**：确保返回的数组长度始终是shopCount（不应该发生，但安全起见）
+  if (results.length < shopCount) {
+    console.error(`[generateShopRewards] 严重错误：返回的道具数量不足，需要${shopCount}个，实际${results.length}个`)
+    // 补充绿色道具
+    const greenPool = ATTRIBUTE_REWARDS.filter(r => r.color === 'green')
+    while (results.length < shopCount && greenPool.length > 0) {
+      const randomGreen = greenPool[Math.floor(Math.random() * greenPool.length)]
+      if (randomGreen) {
+        results.push({
+          option: randomGreen,
+          scaledValue: pickTierValue(randomGreen, layer)
+        })
+      } else {
+        break
+      }
+    }
+  }
+  if (results.length > shopCount) {
+    results.splice(shopCount)
   }
 
   return results

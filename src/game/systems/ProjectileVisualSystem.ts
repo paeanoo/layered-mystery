@@ -29,6 +29,8 @@ export class ProjectileVisualSystem {
   private animationTime = 0
   private trailEffects: Map<string, any[]> = new Map()
   private explosions: ExplosionEffect[] = []
+  // **修复**：跟踪每个投射物的拖尾，以便在投射物消失时清理
+  private projectileTrails: Map<string, Set<string>> = new Map() // projectileId -> Set<trailType>
 
   constructor() {
     this.initializeTrailSystems()
@@ -40,10 +42,50 @@ export class ProjectileVisualSystem {
     this.trailEffects.set('magic', [])
     this.trailEffects.set('fire', [])
   }
+  
+  /**
+   * **修复**：清理指定投射物的所有拖尾效果
+   */
+  clearProjectileTrails(projectileId: string) {
+    const trailTypes = this.projectileTrails.get(projectileId)
+    if (!trailTypes) return
+    
+    // 清理该投射物的所有拖尾
+    trailTypes.forEach(trailType => {
+      const trails = this.trailEffects.get(trailType)
+      if (trails) {
+        // 移除该投射物的所有拖尾（通过projectileId标记）
+        for (let i = trails.length - 1; i >= 0; i--) {
+          if (trails[i].projectileId === projectileId) {
+            trails.splice(i, 1)
+          }
+        }
+      }
+    })
+    
+    // 移除映射
+    this.projectileTrails.delete(projectileId)
+  }
 
-  update(deltaTime: number) {
+  /**
+   * **修复**：清理所有拖尾效果和爆炸效果（用于游戏重新开始时）
+   */
+  clearAll() {
+    // 清空所有拖尾效果
+    this.trailEffects.forEach((trails) => {
+      trails.length = 0
+    })
+    
+    // 清空所有爆炸效果
+    this.explosions.length = 0
+    
+    // 清空投射物拖尾映射
+    this.projectileTrails.clear()
+  }
+
+  update(deltaTime: number, activeProjectileIds?: Set<string>) {
     this.animationTime += deltaTime
-    this.updateTrails(deltaTime)
+    this.updateTrails(deltaTime, activeProjectileIds)
     this.updateExplosions(deltaTime)
   }
 
@@ -96,7 +138,7 @@ export class ProjectileVisualSystem {
     ctx.restore()
   }
 
-  private updateTrails(deltaTime: number) {
+  private updateTrails(deltaTime: number, activeProjectileIds?: Set<string>) {
     this.trailEffects.forEach((trails, trailType) => {
       // 跳过激光类型的拖尾更新
       if (trailType === 'laser') {
@@ -105,6 +147,22 @@ export class ProjectileVisualSystem {
       
       for (let i = trails.length - 1; i >= 0; i--) {
         const trail = trails[i]
+        
+        // **关键修复**：如果提供了活跃投射物ID集合，立即清理对应投射物已经不存在的拖尾
+        if (activeProjectileIds && trail.projectileId) {
+          if (!activeProjectileIds.has(trail.projectileId)) {
+            // 投射物已消失，立即清理拖尾，不等待生命值耗尽
+            trails.splice(i, 1)
+            continue
+          }
+        }
+        
+        // **关键修复**：如果拖尾的projectileId不在projectileTrails映射中，说明投射物已被清理，立即移除拖尾
+        if (trail.projectileId && !this.projectileTrails.has(trail.projectileId)) {
+          trails.splice(i, 1)
+          continue
+        }
+        
         trail.life -= deltaTime
         trail.alpha = trail.life / trail.maxLife
         
@@ -513,26 +571,43 @@ export class ProjectileVisualSystem {
     const trailType = options.type === 'energy' ? 'energy' : 'basic'
     const trails = this.trailEffects.get(trailType) || []
     
-    trails.push({
+    // **修复**：标记拖尾属于哪个投射物，以便清理
+    const trail = {
       x: x,
       y: y,
-      life: 200, // 毫秒
-      maxLife: 200,
+      life: 50, // 毫秒（进一步缩短拖尾时间，避免看起来像"留下子弹"）
+      maxLife: 50,
       size: options.size * 0.7,
-      color: options.color
-    })
+      color: options.color,
+      projectileId: projectileId // 标记拖尾属于哪个投射物
+    }
     
+    trails.push(trail)
     this.trailEffects.set(trailType, trails)
+    
+    // 记录该投射物的拖尾类型
+    if (!this.projectileTrails.has(projectileId)) {
+      this.projectileTrails.set(projectileId, new Set())
+    }
+    this.projectileTrails.get(projectileId)!.add(trailType)
   }
 
-  drawTrails(ctx: CanvasRenderingContext2D) {
+  drawTrails(ctx: CanvasRenderingContext2D, activeProjectileIds?: Set<string>) {
     this.trailEffects.forEach((trails, trailType) => {
       // 跳过激光类型的拖尾
       if (trailType === 'laser') {
         return
       }
       
+      // **关键修复**：只绘制对应投射物仍然存在的拖尾，防止残留显示
       trails.forEach((trail) => {
+        // 如果提供了活跃投射物ID集合，只绘制对应的拖尾
+        if (activeProjectileIds && trail.projectileId) {
+          if (!activeProjectileIds.has(trail.projectileId)) {
+            return // 跳过已消失投射物的拖尾
+          }
+        }
+        
         ctx.save()
         ctx.globalAlpha = trail.alpha
         ctx.fillStyle = trail.color
