@@ -97,16 +97,16 @@ BEGIN
     RETURN QUERY
     SELECT 
         l.id,
-        p.name as player_name,
+        COALESCE(p.name, '未知玩家') as player_name,
         l.score,
         l.level,
         l."time",
         l.build,
-        l.rank
+        ROW_NUMBER() OVER (ORDER BY l.score DESC, l.level DESC, l."time" ASC) as rank
     FROM leaderboard l
-    JOIN players p ON l.player_id = p.id
+    LEFT JOIN players p ON l.player_id = p.id
     WHERE l.season_id = season_id_param
-    ORDER BY l.rank
+    ORDER BY l.score DESC, l.level DESC, l."time" ASC
     LIMIT limit_param;
 END;
 $$ LANGUAGE plpgsql;

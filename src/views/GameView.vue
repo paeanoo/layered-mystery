@@ -72,7 +72,7 @@
       <button class="btn btn-small" @click="togglePause">
         {{ gameStore.gameState.isPaused ? '继续' : '暂停' }}
       </button>
-      <button class="btn btn-small btn-test" @click="openTestModal">
+      <button class="btn btn-small btn-test" @click="openTestModal" style="display: none;">
         测试功能
       </button>
       <button class="btn btn-small" @click="exitGame">退出</button>
@@ -142,7 +142,12 @@ const updateGameState = () => {
   // 只同步游戏状态到store
   if (gameEngine) {
     gameStore.gameState.timeRemaining = gameEngine.getGameTime()
-    gameStore.gameState.level = gameEngine.currentLevel
+    // **关键修复**：只在游戏未暂停时同步关卡，避免在关卡切换回调期间覆盖 previousLevel
+    // 引擎的 nextLevel() 会在回调前设置 gameState.level = previousLevel，回调后设置为 newLevel
+    // 如果在这里同步，可能会在回调执行期间覆盖掉 previousLevel，导致 gameStore.nextLevel() 读取错误的关卡号
+    if (!gameStore.gameState.isPaused) {
+      gameStore.gameState.level = gameEngine.currentLevel
+    }
     gameStore.gameState.score = gameEngine.getScore()
     gameStore.gameState.enemiesDefeated = Math.floor(gameEngine.getScore() / 10)
     
@@ -235,6 +240,15 @@ const confirmSelection = () => {
     // 更新游戏引擎中的游戏状态
     if (gameEngine) {
       gameEngine.updateGameState(gameStore.gameState)
+      // **关键修复**：确保关卡状态同步，避免关卡重置
+      // 引擎的 currentLevel 应该与 gameState.level 保持一致
+      if (gameEngine.currentLevel !== gameStore.gameState.level) {
+        console.warn(`[confirmSelection] 关卡不一致，引擎: ${gameEngine.currentLevel}, gameState: ${gameStore.gameState.level}，同步为 gameState.level`)
+        // 注意：这里不应该直接修改引擎的 currentLevel，因为引擎的 currentLevel 是权威的
+        // 如果出现不一致，说明同步逻辑有问题，应该修复同步逻辑
+        // 但为了安全，我们确保 gameState.level 与引擎一致
+        gameStore.gameState.level = gameEngine.currentLevel
+      }
       // 继续游戏（不是死亡的情况）
       if (!gameStore.gameState.isGameOver) {
         gameEngine.setPaused(false)
@@ -257,6 +271,15 @@ const confirmBossReward = () => {
     // 更新游戏引擎中的游戏状态
     if (gameEngine) {
       gameEngine.updateGameState(gameStore.gameState)
+      // **关键修复**：确保关卡状态同步，避免关卡重置
+      // 引擎的 currentLevel 应该与 gameState.level 保持一致
+      if (gameEngine.currentLevel !== gameStore.gameState.level) {
+        console.warn(`[confirmBossReward] 关卡不一致，引擎: ${gameEngine.currentLevel}, gameState: ${gameStore.gameState.level}，同步为 gameState.level`)
+        // 注意：这里不应该直接修改引擎的 currentLevel，因为引擎的 currentLevel 是权威的
+        // 如果出现不一致，说明同步逻辑有问题，应该修复同步逻辑
+        // 但为了安全，我们确保 gameState.level 与引擎一致
+        gameStore.gameState.level = gameEngine.currentLevel
+      }
       // 继续游戏
       if (!gameStore.gameState.isGameOver) {
         gameEngine.setPaused(false)

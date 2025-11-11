@@ -36,6 +36,7 @@
 
     <div class="leaderboard-content" v-if="leaderboard.length > 0">
       <div class="leaderboard-header-row">
+        <div class="rank-col">排名</div>
         <div class="player-col">玩家</div>
         <div class="level-col">层数</div>
         <div class="score-col">分数</div>
@@ -43,14 +44,21 @@
 
       <div class="leaderboard-entries">
         <div 
-          v-for="(entry, index) in leaderboard" 
+          v-for="entry in leaderboard" 
           :key="entry.id"
           class="leaderboard-entry"
           :class="{ 
-            'top-three': index < 3,
+            'top-three': entry.rank <= 3,
             'current-player': entry.playerName === currentPlayerName
           }"
         >
+          <div class="rank-col">
+            <span class="rank-number" :class="{
+              'rank-1': entry.rank === 1,
+              'rank-2': entry.rank === 2,
+              'rank-3': entry.rank === 3
+            }">{{ entry.rank }}</span>
+          </div>
           <div class="player-col">
             <span class="player-name">{{ entry.playerName }}</span>
           </div>
@@ -203,7 +211,7 @@ watch(() => route.path, (newPath) => {
 
     .leaderboard-header-row {
       display: grid;
-      grid-template-columns: 2fr 1fr 1fr;
+      grid-template-columns: 80px 2fr 1fr 1fr;
       background: var(--primary-bg);
       padding: 1rem;
       font-weight: bold;
@@ -218,7 +226,7 @@ watch(() => route.path, (newPath) => {
 
     .leaderboard-entry {
       display: grid;
-      grid-template-columns: 2fr 1fr 1fr;
+      grid-template-columns: 80px 2fr 1fr 1fr;
       padding: 1rem;
       border-bottom: 1px solid var(--border-color);
       transition: all 0.3s ease;
@@ -388,10 +396,17 @@ watch(() => route.path, (newPath) => {
   }
 }
 
+.rank-col {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: bold;
+}
+
     @media (max-width: 768px) {
       .leaderboard-header-row,
       .leaderboard-entry {
-        grid-template-columns: 2fr 1fr 1fr;
+        grid-template-columns: 60px 2fr 1fr 1fr;
         font-size: 0.9rem;
       }
     }

@@ -171,42 +171,149 @@ export const gameData = {
     
     console.log('获取排行榜，赛季ID:', currentSeason.id)
     
-    // 使用 JOIN 获取玩家名称，并按当前赛季筛选
-    // 注意：使用 players(name) 而不是 players!inner(name)，因为不是所有玩家都在排行榜上
-    const { data, error } = await supabase
+    // 尝试使用数据库函数获取排行榜（如果可用）
+    try {
+      const { data: functionData, error: functionError } = await (supabase as any)
+        .rpc('get_leaderboard', {
+          season_id_param: currentSeason.id,
+          limit_param: limit
+        })
+      
+      if (!functionError && functionData && Array.isArray(functionData)) {
+        console.log('使用数据库函数获取排行榜成功:', functionData.length, '条记录')
+        console.log('数据库函数返回的数据:', JSON.stringify(functionData, null, 2))
+        
+        // 按照分数降序排序，然后重新计算排名
+        const sorted = functionData.sort((a: any, b: any) => {
+          // 首先按分数降序
+          if (b.score !== a.score) return b.score - a.score
+          // 分数相同按层数降序
+          if (b.level !== a.level) return b.level - a.level
+          // 层数相同按时间升序
+          return (a.time || 0) - (b.time || 0)
+        })
+        
+        const result = sorted.map((entry: any, index: number) => {
+          const playerName = entry.player_name || '未知玩家'
+          if (!entry.player_name || entry.player_name === '未知玩家') {
+            console.warn('数据库函数返回的玩家名称为空:', {
+              entry_id: entry.id,
+              player_name: entry.player_name,
+              full_entry: entry
+            })
+          }
+          return {
+            id: entry.id,
+            player_name: playerName,
+            score: entry.score || 0,
+            level: entry.level || 1,
+            time: entry.time || 0,
+            build: entry.build || [],
+            rank: index + 1 // 重新计算排名：按照分数降序排列
+          }
+        })
+        
+        console.log('处理后的排行榜数据:', result)
+        return result
+      } else {
+        console.warn('数据库函数调用失败，尝试直接查询:', functionError)
+      }
+    } catch (err) {
+      console.warn('数据库函数不可用，使用直接查询:', err)
+    }
+    
+    // 备用方案：使用直接查询，通过JOIN获取玩家名称
+    // 先获取排行榜数据，按照分数降序排序（分数相同按层数降序，再按时间升序）
+    const { data: leaderboardData, error: leaderboardError } = await supabase
       .from('leaderboard')
-      .select(`
-        id,
-        score,
-        level,
-        "time",
-        build,
-        rank,
-        players(name)
-      `)
+      .select('id, score, level, "time", build, rank, player_id')
       .eq('season_id', currentSeason.id)
-      .order('rank', { ascending: true })
+      .order('score', { ascending: false })
+      .order('level', { ascending: false })
+      .order('time', { ascending: true })
       .limit(limit)
     
-    if (error) {
-      console.error('获取排行榜失败:', error)
-      console.error('错误详情:', JSON.stringify(error, null, 2))
+    if (leaderboardError) {
+      console.error('获取排行榜失败:', leaderboardError)
       return []
     }
     
-    console.log('获取到排行榜数据:', data?.length || 0, '条记录')
+    if (!leaderboardData || leaderboardData.length === 0) {
+      console.log('排行榜数据为空')
+      return []
+    }
     
-    // 转换数据格式
-    const result = data.map((entry: any) => {
-      const playerName = entry.players ? (entry.players.name || '未知玩家') : '未知玩家'
+    console.log('获取到排行榜数据:', leaderboardData.length, '条记录')
+    console.log('排行榜数据详情:', JSON.stringify(leaderboardData, null, 2))
+    
+    // 获取所有玩家ID（确保类型正确）
+    const playerIds = [...new Set(leaderboardData.map((entry: any) => entry.player_id).filter((id: any) => id != null && id !== ''))]
+    
+    console.log('提取的玩家ID列表:', playerIds)
+    console.log('玩家ID数量:', playerIds.length)
+    
+    if (playerIds.length === 0) {
+      console.warn('没有找到任何玩家ID')
+      return []
+    }
+    
+    // 批量查询玩家名称 - 使用更明确的查询方式
+    const { data: playersData, error: playersError } = await supabase
+      .from('players')
+      .select('id, name')
+      .in('id', playerIds)
+    
+    console.log('查询玩家信息的请求ID:', playerIds)
+    console.log('查询玩家信息的响应:', playersData)
+    console.log('查询玩家信息的错误:', playersError)
+    
+    if (playersError) {
+      console.error('获取玩家信息失败:', playersError)
+      console.error('玩家ID列表:', playerIds)
+      console.error('玩家ID类型:', playerIds.map(id => typeof id))
+    }
+    
+    // 创建玩家ID到名称的映射（确保ID格式匹配）
+    const playerNameMap = new Map<string, string>()
+    if (playersData && Array.isArray(playersData)) {
+      playersData.forEach((player: any) => {
+        if (player.id && player.name) {
+          // 确保ID格式一致（都转为字符串）
+          const playerId = String(player.id)
+          playerNameMap.set(playerId, player.name)
+          console.log(`映射玩家: ${playerId} -> ${player.name}`)
+        }
+      })
+      console.log('成功获取', playerNameMap.size, '个玩家名称')
+      console.log('玩家名称映射表:', Array.from(playerNameMap.entries()))
+    } else {
+      console.warn('玩家数据为空或格式不正确:', playersData)
+    }
+    
+    // 转换数据格式，并重新计算排名（按照分数降序）
+    const result = leaderboardData.map((entry: any, index: number) => {
+      // 确保 player_id 格式一致
+      const entryPlayerId = entry.player_id ? String(entry.player_id) : null
+      const playerName = entryPlayerId ? (playerNameMap.get(entryPlayerId) || null) : null
+      
+      // 如果仍然没有获取到名称，记录详细警告
+      if (!playerName && entryPlayerId) {
+        console.warn('玩家名称获取失败:')
+        console.warn('  - player_id:', entryPlayerId, '(类型:', typeof entryPlayerId, ')')
+        console.warn('  - 映射表中的所有ID:', Array.from(playerNameMap.keys()))
+        console.warn('  - 映射表中的所有ID类型:', Array.from(playerNameMap.keys()).map(id => typeof id))
+        console.warn('  - 查询到的玩家数据:', playersData)
+        console.warn('  - 原始entry数据:', entry)
+      }
+      
       return {
         id: entry.id,
-        player_name: playerName,
+        player_name: playerName || '未知玩家',
         score: entry.score || 0,
         level: entry.level || 1,
         time: entry.time || 0,
         build: entry.build || [],
-        rank: entry.rank || 0
+        rank: index + 1 // 重新计算排名：按照分数降序排列，排名从1开始
       }
     })
     
