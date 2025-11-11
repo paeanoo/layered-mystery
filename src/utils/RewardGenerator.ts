@@ -1,4 +1,4 @@
-import { ATTRIBUTE_REWARDS, SPECIAL_REWARDS, BOSS_EXCLUSIVE_REWARDS, LEGENDARY_REWARDS, BOSS_REWARD_SELECTION, getTierMultiplier, type RewardOption, type RewardCategory } from '../types/reward'
+import { LEGENDARY_REWARDS, BOSS_REWARD_SELECTION, ATTRIBUTE_REWARDS, SPECIAL_REWARDS, EPIC_REWARDS, getTierMultiplier, type RewardOption } from '../types/reward'
 
 export interface RewardContext {
   layer: number
@@ -61,20 +61,14 @@ function pickTierValue(opt: RewardOption, layer: number): number | undefined {
   return undefined
 }
 
-function categoryPool(category: RewardCategory): RewardOption[] {
-  if (category === 'attribute') return ATTRIBUTE_REWARDS
-  if (category === 'special') return SPECIAL_REWARDS
-  return []
-}
-
 // 协同加权示例：根据玩家当前倾向微调
 function synergyAdjust(opt: RewardOption, ctx?: RewardContext): number {
   if (!ctx?.playerStats) return opt.weight || 1
   const p = ctx.playerStats
   let w = opt.weight || 1
-  // 攻速高 → 偏向投射物
+  // 攻速高 → 偏向投射物相关
   if ((p.attackSpeed || 1) > 1.4) {
-    if (opt.effectKey.includes('projectiles')) w += 2
+    if (opt.effectKey.includes('projectiles') || opt.effectKey.includes('attack_speed')) w += 2
   }
   // 暴击高 → 偏向暴伤/穿透
   if ((p.critChance || 0) > 0.25) {
@@ -84,39 +78,161 @@ function synergyAdjust(opt: RewardOption, ctx?: RewardContext): number {
 }
 
 export function generateBossRewards(layer: number, ctx?: RewardContext): GeneratedReward[] {
-  const sel = BOSS_REWARD_SELECTION[layer]
+  // Boss层只生成传说品质（最高品质）奖励
+  // **修复**：确保所有Boss层（包括第20层之后）都生成传说品质奖励
+  const sel = BOSS_REWARD_SELECTION[layer] || {
+    candidates: layer >= 20 ? 6 : layer >= 15 ? 5 : layer >= 10 ? 4 : 3
+  }
   const exclude = new Set<string>(ctx?.recentOfferedIds || [])
+  
+  // **关键修复**：确保只从传说奖励池（LEGENDARY_REWARDS）中选择，不包含其他品质
+  // 所有Boss层都应该生成传说品质（金色）奖励，无论层数多少
+  const legendaryPicked = weightedSample(LEGENDARY_REWARDS, sel.candidates, exclude, (opt) => {
+    // 使用协同加权，让奖励更符合玩家当前构筑
+    return synergyAdjust(opt, ctx)
+  })
+  
+  // **验证**：确保所有生成的奖励都是传说品质（金色）
+  const results: GeneratedReward[] = legendaryPicked.map(opt => {
+    // 确保奖励是传说品质
+    if (opt.color !== 'gold') {
+      console.warn(`[generateBossRewards] 警告：Boss奖励应该是金色传说品质，但发现 ${opt.color} 品质的奖励: ${opt.id}`)
+    }
+    return {
+      option: opt,
+      scaledValue: pickTierValue(opt, layer)
+    }
+  })
+
+  // **验证**：确保至少生成了1个奖励
+  if (results.length === 0) {
+    console.error(`[generateBossRewards] 错误：第${layer}层Boss奖励生成失败，未生成任何奖励！`)
+  } else {
+    console.log(`[generateBossRewards] ✅ 第${layer}层Boss奖励生成成功：${results.length}个传说品质奖励`)
+  }
+
+  return results
+}
+
+// 商店价格计算
+export function calculateShopPrice(quality: 'green' | 'blue' | 'purple' | 'gold', layer: number): number {
+  let basePrice = 0
+  let layerIncrement = 0
+  switch (quality) {
+    case 'green': basePrice = 80; layerIncrement = 5; break
+    case 'blue': basePrice = 150; layerIncrement = 8; break
+    case 'purple': basePrice = 300; layerIncrement = 15; break
+    case 'gold': basePrice = 600; layerIncrement = 30; break
+  }
+  const price = basePrice + layerIncrement * (layer - 1)
+  return Math.max(basePrice, price)
+}
+
+// 生成商店道具
+export function generateShopRewards(layer: number, ctx?: RewardContext): GeneratedReward[] {
+  // 根据层数确定概率和数量
+  // 更高层出现高阶道具的概率更大，但所有品质都有几率出现
+  let greenProb = 0.70
+  let blueProb = 0.25
+  let purpleProb = 0.05
+  let goldProb = 0
+  let shopCount = 3
+
+  if (layer >= 51) {
+    greenProb = 0.10
+    blueProb = 0.20
+    purpleProb = 0.50
+    goldProb = 0.20
+    shopCount = 5
+  } else if (layer >= 41) {
+    greenProb = 0.15
+    blueProb = 0.25
+    purpleProb = 0.45
+    goldProb = 0.15
+    shopCount = 4
+  } else if (layer >= 31) {
+    greenProb = 0.20
+    blueProb = 0.30
+    purpleProb = 0.40
+    goldProb = 0.10
+    shopCount = 4
+  } else if (layer >= 21) {
+    greenProb = 0.30
+    blueProb = 0.35
+    purpleProb = 0.30
+    goldProb = 0.05
+    shopCount = 4
+  } else if (layer >= 16) {
+    greenProb = 0.40
+    blueProb = 0.40
+    purpleProb = 0.18
+    goldProb = 0.02
+    shopCount = 3
+  } else if (layer >= 11) {
+    greenProb = 0.50
+    blueProb = 0.40
+    purpleProb = 0.09
+    goldProb = 0.01
+    shopCount = 3
+  } else if (layer >= 6) {
+    greenProb = 0.65
+    blueProb = 0.30
+    purpleProb = 0.05
+    goldProb = 0
+    shopCount = 3
+  }
+
   const results: GeneratedReward[] = []
+  const exclude = new Set<string>(ctx?.recentOfferedIds || [])
 
-  const bossExclusive = BOSS_EXCLUSIVE_REWARDS[layer] || []
-  const bossPicked = weightedSample(bossExclusive, sel?.bossExclusiveCount || 0, exclude)
-  bossPicked.forEach(opt => {
-    results.push({ option: opt, scaledValue: pickTierValue(opt, layer) })
-    exclude.add(opt.id)
-  })
+  for (let i = 0; i < shopCount; i++) {
+    const rand = Math.random()
+    let pool: RewardOption[] = []
+    
+    if (rand < greenProb) {
+      pool = ATTRIBUTE_REWARDS.filter(r => r.color === 'green')
+    } else if (rand < greenProb + blueProb) {
+      pool = SPECIAL_REWARDS.filter(r => r.color === 'blue')
+    } else if (rand < greenProb + blueProb + purpleProb) {
+      pool = EPIC_REWARDS.filter(r => r.color === 'purple')
+    } else {
+      pool = LEGENDARY_REWARDS
+    }
 
-  // 通用池：包含属性、特效两类
-  const needCommon = Math.max(0, (sel?.candidates || 0) - results.length)
-  const perType = Math.max(1, Math.floor(needCommon / 2))
-  const leftovers = needCommon - perType * 2
-
-  const attrPicked = weightedSample(categoryPool('attribute'), perType, exclude, (o) => synergyAdjust(o, ctx))
-  const specialPicked = weightedSample(categoryPool('special'), perType + leftovers, exclude, (o) => synergyAdjust(o, ctx))
-
-  ;[...attrPicked, ...specialPicked].forEach(opt => {
-    results.push({ option: opt, scaledValue: pickTierValue(opt, layer) })
-    exclude.add(opt.id)
-  })
-
-  // 第20层可插入1个传说候选（不保证被选中，只作为候选之一）
-  if (layer >= 20 && results.length > 0) {
-    const lgd = weightedSample(LEGENDARY_REWARDS, 1, exclude)
-    if (lgd[0]) {
-      results.push({ option: lgd[0], scaledValue: pickTierValue(lgd[0], layer) })
+    if (pool.length > 0) {
+      const picked = weightedSample(pool, 1, exclude, (opt) => synergyAdjust(opt, ctx))
+      if (picked.length > 0) {
+        const opt = picked[0]
+        results.push({
+          option: opt,
+          scaledValue: pickTierValue(opt, layer)
+        })
+        exclude.add(opt.id)
+      }
     }
   }
 
-  return results.slice(0, sel?.candidates || results.length)
+  return results
+}
+
+const QUALITY_POOLS: Record<'green' | 'blue' | 'purple' | 'gold', RewardOption[]> = {
+  green: ATTRIBUTE_REWARDS.filter(r => r.color === 'green'),
+  blue: SPECIAL_REWARDS.filter(r => r.color === 'blue'),
+  purple: EPIC_REWARDS.filter(r => r.color === 'purple'),
+  gold: LEGENDARY_REWARDS
+}
+
+export function generateShopItemByQuality(quality: 'green' | 'blue' | 'purple' | 'gold', layer: number, ctx?: RewardContext): GeneratedReward | undefined {
+  const pool = QUALITY_POOLS[quality]
+  if (!pool || pool.length === 0) return undefined
+  const exclude = new Set<string>(ctx?.recentOfferedIds || [])
+  const picked = weightedSample(pool, 1, exclude, (opt) => synergyAdjust(opt, ctx))
+  if (picked.length === 0) return undefined
+  const option = picked[0]
+  return {
+    option,
+    scaledValue: pickTierValue(option, layer)
+  }
 }
 
 

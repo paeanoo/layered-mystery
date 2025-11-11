@@ -18,8 +18,7 @@
               id="target-level"
               v-model.number="targetLevel" 
               type="number" 
-              min="1" 
-              max="20" 
+              min="1"
               class="level-input"
             />
             <button class="btn btn-primary" @click="jumpToLevel">跳转</button>
@@ -199,7 +198,7 @@ const closeModal = () => {
 
 // 跳转关卡
 const jumpToLevel = () => {
-  if (targetLevel.value >= 1 && targetLevel.value <= 20) {
+  if (targetLevel.value >= 1) {
     emit('jumpToLevel', targetLevel.value)
   }
 }

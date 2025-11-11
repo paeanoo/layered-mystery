@@ -25,10 +25,8 @@
           :class="{ 
             selected: selectedPassive === passive.id,
             disabled: isPassiveDisabled(passive.id),
-            'reward-white': getRewardColor(passive) === 'white',
             'reward-green': getRewardColor(passive) === 'green',
             'reward-blue': getRewardColor(passive) === 'blue',
-            'reward-purple': getRewardColor(passive) === 'purple',
             'reward-gold': getRewardColor(passive) === 'gold'
           }"
           @click="selectPassive(passive.id)"
@@ -36,6 +34,15 @@
           <div class="passive-icon" v-if="hasIcon(passive)">{{ getRewardIcon(passive) }}</div>
           <h3 class="passive-name">{{ passive.name }}</h3>
           <p class="passive-description">{{ passive.description }}</p>
+          <!-- Debuff显示 -->
+          <div v-if="'debuff' in passive && passive.debuff" class="debuff-info">
+            <span class="debuff-label">⚠️ 负面效果:</span>
+            <span class="debuff-description">{{ passive.debuff.description }}</span>
+          </div>
+          <!-- 形态大师特殊提示 -->
+          <div v-if="'effectKey' in passive && passive.effectKey === 'dual_weapon_modes'" class="form-master-hint">
+            <span class="hint-text">💡 获得后按 <kbd>Q</kbd> 或 <kbd>Tab</kbd> 键切换模式</span>
+          </div>
           <!-- 统一显示统计信息：所有奖励都使用getPassiveStats，格式统一为"标签: 数值" -->
           <div class="passive-stats" v-if="getPassiveStats(passive.id)">
             <span class="stat-item" v-for="stat in getPassiveStats(passive.id)" :key="stat.label">
@@ -223,13 +230,17 @@ const getPassiveStats = (passiveId: string) => {
       } else if (reward.effectKey === 'low_hp_damage_reduction') {
         stats.push({ label: '触发', value: '<30%HP' })
         stats.push({ label: '效果', value: '减伤' })
+      } else if (reward.effectKey === 'on_hit_temp_shield') {
+        stats.push({ label: '触发', value: '受伤时' })
+        stats.push({ label: '效果', value: '获得护盾' })
+        stats.push({ label: '护盾值', value: '10+层数×2' })
       } else {
         // 通用特殊效果显示
         stats.push({ label: '特效', value: '✓' })
       }
     }
-    // 3. Boss专属奖励（boss_exclusive）
-    else if (reward.category === 'boss_exclusive') {
+    // 3. 传说奖励（legendary，Boss层专属，最高品质）
+    else if (reward.category === 'legendary') {
       if (reward.effectKey === 'vs_shield_bonus') {
         const value = reward.baseValue || 0.5
         stats.push({ label: '对护盾', value: `+${(value * 100).toFixed(0)}%` })
@@ -261,6 +272,10 @@ const getPassiveStats = (passiveId: string) => {
         const value = reward.baseValue || 0.10
         stats.push({ label: '全属性', value: `+${(value * 100).toFixed(0)}%` })
         stats.push({ label: '免疫控制', value: '✓' })
+      } else if (reward.effectKey === 'dual_weapon_modes') {
+        stats.push({ label: '操作', value: '按Q/Tab切换' })
+        stats.push({ label: '模式1', value: '高伤害' })
+        stats.push({ label: '模式2', value: '高攻速' })
       } else {
         // 尝试从description提取
         const extracted = extractValueFromDescription(reward.description)
@@ -288,12 +303,13 @@ const getPassiveStats = (passiveId: string) => {
   return null
 }
 
-// 获取奖励颜色（如果是RewardOption则返回color，否则返回'white'）
+// 获取奖励颜色（如果是RewardOption则返回color，否则返回'green'作为默认值）
 const getRewardColor = (passive: PassiveAttribute | RewardOption): string => {
   if ('color' in passive && passive.color) {
     return passive.color
   }
-  return 'white'
+  // 基础属性（PassiveAttribute）没有color字段，默认显示为绿色
+  return 'green'
 }
 
 // 检查是否有图标（基础属性或有特殊意义的奖励显示图标）
@@ -308,8 +324,8 @@ const hasIcon = (passive: PassiveAttribute | RewardOption): boolean => {
     const name = reward.name
     const effectKey = reward.effectKey
     
-    // 传说和Boss专属总是显示图标
-    if (reward.category === 'legendary' || reward.category === 'boss_exclusive') {
+    // 传说奖励总是显示图标
+    if (reward.category === 'legendary') {
       return true
     }
     
@@ -335,8 +351,20 @@ const hasIcon = (passive: PassiveAttribute | RewardOption): boolean => {
         basePassiveId = 'regeneration'
       } else if (effectKey.startsWith('max_health_add')) {
         basePassiveId = 'max_health'
+      } else if (effectKey.startsWith('crit_damage_add')) {
+        // 暴击伤害：使用特殊图标
+        return true
       } else if (effectKey === 'aoe_radius_pct') {
         // 范围效果：有特殊图标
+        return true
+      } else if (effectKey === 'elite_damage_pct') {
+        // 对精英伤害：有特殊图标
+        return true
+      } else if (effectKey === 'boss_damage_pct') {
+        // 对Boss伤害：有特殊图标
+        return true
+      } else if (effectKey === 'all_damage_pct') {
+        // 所有伤害：有特殊图标
         return true
       }
       
@@ -363,10 +391,15 @@ const getRewardIcon = (passive: PassiveAttribute | RewardOption): string => {
     return passive.icon
   }
   // RewardOption：根据category和name返回对应图标
-  if ('category' in passive && 'name' in passive) {
+  if ('category' in passive && 'name' in passive && 'effectKey' in passive) {
     const reward = passive as RewardOption
     const name = reward.name
     const effectKey = reward.effectKey
+    
+    // 传说奖励（先检查，优先级最高）
+    if (reward.category === 'legendary') {
+      return '✨'
+    }
     
     // Boss奖励中的属性奖励（如伤害+15%、攻速+20%、最大生命+3等）：使用基础被动属性的图标
     if (reward.category === 'attribute' && effectKey) {
@@ -375,9 +408,29 @@ const getRewardIcon = (passive: PassiveAttribute | RewardOption): string => {
         return '🌀' // 漩涡/范围效果图标
       }
       
+      // 对精英伤害：特殊图标
+      if (effectKey === 'elite_damage_pct') {
+        return '⭐' // 星星图标表示对精英伤害
+      }
+      
+      // 对Boss伤害：特殊图标
+      if (effectKey === 'boss_damage_pct') {
+        return '👑' // 皇冠图标表示对Boss伤害
+      }
+      
+      // 所有伤害：特殊图标
+      if (effectKey === 'all_damage_pct') {
+        return '💥' // 爆炸图标表示所有伤害
+      }
+      
+      // 暴击伤害：特殊图标
+      if (effectKey.startsWith('crit_damage_add')) {
+        return '💥' // 爆炸图标表示暴击伤害
+      }
+      
       // 根据effectKey查找对应的基础被动属性
       let basePassiveId = ''
-      if (effectKey.startsWith('damage_pct')) {
+      if (effectKey.startsWith('damage_pct') || effectKey === 'all_damage_pct') {
         basePassiveId = 'damage'
       } else if (effectKey.startsWith('attack_speed_pct')) {
         basePassiveId = 'attack_speed'
@@ -405,16 +458,6 @@ const getRewardIcon = (passive: PassiveAttribute | RewardOption): string => {
       }
     }
     
-    // 传说奖励
-    if (reward.category === 'legendary') {
-      return '✨'
-    }
-    
-    // Boss专属奖励
-    if (reward.category === 'boss_exclusive') {
-      return '👑'
-    }
-    
     // 特殊效果奖励
     if (reward.category === 'special') {
       if (effectKey === 'on_hit_chain_lightning') return '⚡' // 连锁闪电
@@ -422,6 +465,7 @@ const getRewardIcon = (passive: PassiveAttribute | RewardOption): string => {
       if (effectKey === 'on_hit_poison') return '☠️' // 剧毒
       if (effectKey === 'on_crit_explode') return '💥' // 爆裂暴击
       if (effectKey === 'low_hp_damage_reduction') return '🛡️' // 背水减伤：盾牌图标
+      if (effectKey === 'on_hit_temp_shield') return '🛡️' // 临时护盾：盾牌图标
       if (effectKey === 'move_heal_trail') return '💚' // 治疗轨迹：绿色心形图标
       if (effectKey === 'on_elite_kill_bonus') return '⭐' // 精英克星：星星图标
       if (effectKey === 'on_kill_heal_orb') return '💚' // 治疗球：绿色心形图标
@@ -608,14 +652,6 @@ const extractValueFromDescription = (description: string): string | null => {
 }
 
 /* 奖励颜色标识 */
-.passive-card.reward-white {
-  border-color: #cccccc;
-}
-.passive-card.reward-white:hover {
-  border-color: #ffffff;
-  box-shadow: 0 10px 30px rgba(255, 255, 255, 0.2);
-}
-
 .passive-card.reward-green {
   border-color: #4ade80;
 }
@@ -630,19 +666,6 @@ const extractValueFromDescription = (description: string): string | null => {
 .passive-card.reward-blue:hover {
   border-color: #3b82f6;
   box-shadow: 0 10px 30px rgba(59, 130, 246, 0.3);
-}
-
-.passive-card.reward-purple {
-  border-color: #a78bfa;
-  background: rgba(167, 139, 250, 0.1);
-}
-.passive-card.reward-purple:hover {
-  border-color: #8b5cf6;
-  box-shadow: 0 10px 30px rgba(139, 92, 246, 0.4);
-}
-.passive-card.reward-purple.selected {
-  background: rgba(139, 92, 246, 0.2);
-  box-shadow: 0 0 25px rgba(139, 92, 246, 0.5);
 }
 
 .passive-card.reward-gold {
@@ -689,6 +712,29 @@ const extractValueFromDescription = (description: string): string | null => {
   text-align: center;
 }
 
+.debuff-info {
+  background: rgba(255, 68, 68, 0.15);
+  border: 1px solid rgba(255, 68, 68, 0.5);
+  border-radius: 6px;
+  padding: 0.5rem 0.75rem;
+  margin-bottom: 0.75rem;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.85rem;
+}
+
+.debuff-label {
+  color: #ff6b6b;
+  font-weight: bold;
+  white-space: nowrap;
+}
+
+.debuff-description {
+  color: #ff9999;
+  flex: 1;
+}
+
 .passive-stats {
   display: flex;
   flex-wrap: wrap;
@@ -703,6 +749,33 @@ const extractValueFromDescription = (description: string): string | null => {
   border-radius: 12px;
   font-size: 0.8rem;
   font-weight: bold;
+}
+
+.form-master-hint {
+  margin-top: 0.5rem;
+  margin-bottom: 0.5rem;
+  padding: 0.5rem;
+  background: rgba(139, 92, 246, 0.2);
+  border: 1px solid rgba(139, 92, 246, 0.5);
+  border-radius: 8px;
+  text-align: center;
+}
+
+.hint-text {
+  color: #a78bfa;
+  font-size: 0.85rem;
+  font-weight: 500;
+}
+
+.hint-text kbd {
+  background: rgba(139, 92, 246, 0.3);
+  border: 1px solid rgba(139, 92, 246, 0.6);
+  border-radius: 4px;
+  padding: 0.2rem 0.4rem;
+  font-family: monospace;
+  font-size: 0.9em;
+  color: #c4b5fd;
+  margin: 0 0.2rem;
 }
 
 .modal-actions {

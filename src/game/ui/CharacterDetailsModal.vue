@@ -84,19 +84,17 @@
         </div>
       </div>
 
-      <!-- 已获得的奖励加成区域 -->
+      <!-- 已获得的道具加成区域 -->
       <div class="rewards-section" v-if="acquiredRewards.length > 0">
-        <h3 class="rewards-title">已获得的奖励加成</h3>
+        <h3 class="rewards-title">已获得的道具加成</h3>
         <div class="rewards-list">
           <div 
             v-for="(reward, index) in acquiredRewards" 
             :key="`${reward.id}-${index}`"
             class="reward-card"
             :class="{
-              'reward-white': reward.color === 'white',
               'reward-green': reward.color === 'green',
               'reward-blue': reward.color === 'blue',
-              'reward-purple': reward.color === 'purple',
               'reward-gold': reward.color === 'gold'
             }"
           >
@@ -126,7 +124,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { PASSIVE_ATTRIBUTES } from '../../types/game'
-import { ATTRIBUTE_REWARDS, SPECIAL_REWARDS, BOSS_EXCLUSIVE_REWARDS, LEGENDARY_REWARDS } from '../../types/reward'
+import { ATTRIBUTE_REWARDS, SPECIAL_REWARDS, LEGENDARY_REWARDS } from '../../types/reward'
 import type { RewardOption } from '../../types/reward'
 
 interface PlayerStats {
@@ -159,7 +157,7 @@ interface Props {
 
 const props = defineProps<Props>()
 
-// 获取已获得的奖励列表（只显示Boss奖励，不显示基础属性）
+// 获取已获得的奖励列表（只显示非属性类奖励，不显示基础属性）
 const acquiredRewards = computed(() => {
   const passiveIds = props.playerStats.passiveAttributes || []
   const rewardMap = new Map<string, { id: string; name: string; description: string; color: string; category: string; effectKey?: string; count: number; stats: Array<{ label: string; value: string }> | null }>()
@@ -173,12 +171,10 @@ const acquiredRewards = computed(() => {
       return
     }
     
-    // 查找Boss奖励池（包括属性奖励、特殊效果、Boss专属、传说）
+    // 仅展示“非属性”奖励（特殊+传说）
     const allRewards = [
-      ...ATTRIBUTE_REWARDS,  // Boss层的属性奖励
       ...SPECIAL_REWARDS,
-      ...Object.values(BOSS_EXCLUSIVE_REWARDS).flat(),
-      ...LEGENDARY_REWARDS
+      ...LEGENDARY_REWARDS  // Boss层专属，最高品质
     ]
     
     const reward = allRewards.find(r => r.id === passiveId)
@@ -298,8 +294,8 @@ const getRewardStats = (reward: RewardOption): Array<{ label: string; value: str
       stats.push({ label: '效果', value: '减伤' })
     }
   }
-  // 3. Boss专属奖励
-  else if (reward.category === 'boss_exclusive') {
+  // 3. 传说奖励（Boss层专属，最高品质）
+  else if (reward.category === 'legendary') {
     if (reward.effectKey === 'vs_shield_bonus') {
       const value = reward.baseValue || 0.5
       stats.push({ label: '对护盾', value: `+${(value * 100).toFixed(0)}%` })
@@ -368,11 +364,6 @@ const getRewardIcon = (reward: { id: string; category: string; name: string; eff
   // 传说奖励
   if (reward.category === 'legendary') {
     return '✨'
-  }
-  
-  // Boss专属奖励
-  if (reward.category === 'boss_exclusive') {
-    return '👑'
   }
   
   // 特殊效果奖励
@@ -720,21 +711,12 @@ const formatPercentage = (value: number | undefined | null): string => {
 }
 
 /* 奖励颜色边框 */
-.reward-card.reward-white {
-  border-color: #cccccc;
-}
-
 .reward-card.reward-green {
   border-color: #4ade80;
 }
 
 .reward-card.reward-blue {
   border-color: #60a5fa;
-}
-
-.reward-card.reward-purple {
-  border-color: #a78bfa;
-  background: rgba(167, 139, 250, 0.1);
 }
 
 .reward-card.reward-gold {

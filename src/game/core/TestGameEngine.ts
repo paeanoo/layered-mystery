@@ -15,6 +15,10 @@ export class TestGameEngine {
   private visualRenderer: VisualRenderingSystem
   private enemyVisualSystem: EnemyVisualSystem
   private projectileVisualSystem: ProjectileVisualSystem
+  
+  // 平滑移动相关（降低轻微卡顿感）
+  private playerVelX: number = 0
+  private playerVelY: number = 0
   private effectsSystem: AdvancedEffectsSystem
   private audioSystem: AudioSystem
   private playerX = 100
@@ -37,7 +41,7 @@ export class TestGameEngine {
     targetY?: number
     attackCooldown?: number
     lastAttack?: number
-    warningLine?: { startX: number; startY: number; endX: number; endY: number; time: number }
+    warningLine?: { startX: number; startY: number; endX: number; endY: number; time: number; targetX?: number; targetY?: number; fireTime?: number }
     isElite?: boolean
     shield?: number
     maxShield?: number
@@ -45,17 +49,26 @@ export class TestGameEngine {
     lastSkill?: number
   }> = []
   private projectiles: Array<{ x: number; y: number; vx: number; vy: number; damage: number; isCrit: boolean; life: number; pierce: number; maxPierce: number; isGrenade?: boolean; owner: 'player' | 'enemy'; hitEnemies?: Set<any> }> = []
-  private readonly MAX_PROJECTILES = 500 // 限制最大投射物数量，防止性能问题
-  private readonly MAX_ENEMIES = 150 // 限制最大敌人数量，防止性能问题
+  private readonly MAX_PROJECTILES = 150 // **关键修复**：进一步大幅降低投射物上限，防止卡死
+  private readonly MAX_ENEMIES = 80 // **关键修复**：大幅降低敌人上限，防止卡死
+  private multiShotPhase = 0 // 控制偶数投射物时的左右偏移交替，让其中一发始终对准中心
   private effects: Array<{ x: number; y: number; type: string; life: number; size: number }> = []
   private droppedItems: Array<{ id: string; x: number; y: number; vx: number; vy: number; type: 'heal_orb' | 'experience' | 'energy' | 'item'; value: number; size: number; life: number; maxLife: number; magnetRange?: number; attractedToPlayer?: boolean }> = [] // 掉落物数组
   private readonly MAX_DROPPED_ITEMS = 100 // 限制最大掉落物数量
+  private healTrailAreas: Array<{ x: number; y: number; radius: number; healPerSecond: number; life: number; maxLife: number; createdAt: number }> = [] // 治疗轨迹区域
+  private lastHealTrailPosition: { x: number; y: number } | null = null // 上次创建治疗区域的位置
+  private healTrailCooldown = 0 // 治疗轨迹创建冷却（毫秒）
   private enemySpawnTimer = 0
   private attackTimer = 0 // 毫秒计时器
   private lastAttackTime = Date.now()
   private levelStartTime = 0 // 当前层开始时间
-  private enemyUpdateIndex = 0 // 敌人更新索引，用于分批更新
+  private enemyUpdateIndex = 0 // 敌人更新索引，用于分批更新（已废弃，改用normalEnemyUpdateIndex）
+  private normalEnemyUpdateIndex = 0 // 普通敌人更新索引，用于分批更新（排除Boss）
+  private bossUpdateFrameCounter = 0 // Boss更新帧计数器，用于限制Boss更新频率
   private attackCooldown = 100 // 攻击间隔（毫秒）- 进一步提高攻击速度
+  private cleanupCounter = 0 // 清理计数器，用于定期强制清理
+  private visualUpdateCounter = 0 // 视觉系统更新计数器，用于降低更新频率
+  private lastScoreSaveTime = 0 // 上次保存分数的时间，用于避免频繁保存
   private pendingEnemies: Array<any> = [] // 待添加的敌人队列（避免在updateEnemyAI中直接修改enemies数组）
   // 快速虫分拨生成控制
   private bugWaveCount = 0 // 当前波次已生成的快速虫数量
@@ -69,26 +82,21 @@ export class TestGameEngine {
   private playerDamageHistory: Array<{ time: number; damage: number }> = [] // 伤害堆叠窗口历史
   private playerProjectileIFrameUntil = 0 // 远程伤害无敌帧（独立于接触伤害）
   private playerExplosionIFrameUntil = 0 // 爆炸伤害无敌帧（独立于接触伤害）
+  private currentAttackRangeSq: number = 300 * 300
   private isPaused = false
   private gameTime = 30 // 游戏时间（秒）
   
   // 根据层数获取该层的坚持时间（秒）
-  // 前4层：30秒，第5-9层逐渐增加到60秒，第10层及以后：60秒
+  // 前10层：30秒，第11层及以后：60秒
   private getLevelTime(level: number): number {
-    if (level <= 4) {
-      return 30 // 前4层保持30秒
+    // 第5层是Boss层，需要更多时间
+    if (level === 5) {
+      return 45 // Boss层45秒
     }
-    if (level >= 10) {
-      return 60 // 第10层及以后固定60秒
+    if (level <= 10) {
+      return 30 // 前10层（除第5层）保持30秒
     }
-    // 第5层到第9层：从30秒逐渐增加到60秒
-    // 线性增长：30 + (level - 5) * (60 - 30) / (9 - 5)
-    const minLevel = 5
-    const maxLevel = 9
-    const minTime = 30
-    const maxTime = 60
-    const progress = (level - minLevel) / (maxLevel - minLevel)
-    return Math.floor(minTime + (maxTime - minTime) * progress)
+    return 60 // 第11层及以后固定60秒
   }
   private gameStartTime = 0 // 游戏开始时间
   private pausedTime = 0 // 暂停时累计的时间
@@ -96,6 +104,8 @@ export class TestGameEngine {
   private keys: { [key: string]: boolean } = {} // 键盘状态跟踪
   public currentLevel = 1 // 当前层数（公开用于测试功能）
   private bossSpawnedInLevel = false // 本层是否已生成Boss
+  private bossCountInLevel = 0 // 本层已生成的Boss数量
+  private targetBossCount = 1 // 本层目标Boss数量
   private showPassiveSelection = false // 是否显示被动属性选择
   private passiveOptions: Array<{id: string, name: string, description: string}> = [] // 被动属性选项
   private lifestealPercent = 0 // 生命偷取百分比
@@ -141,7 +151,6 @@ export class TestGameEngine {
     SUMMONER_SPAWN_MAX_DISTANCE: 100, // 召唤师最大召唤距离
     PHANTOM_BACKSTAB_RANGE: 30,    // 幻影刺客背刺范围
     ARCHER_KEEP_DISTANCE: 250,     // 弓箭手保持距离
-    SNIPER_ATTACK_RANGE: 500,      // 狙击手攻击范围
     SHIELDGUARD_SHIELD_REGEN_TIME: 5000, // 护盾兵护盾重生时间（毫秒）
   }
 
@@ -149,7 +158,7 @@ export class TestGameEngine {
   private readonly ENEMY_DMG_MULTIPLIER: Record<string, number> = {
     'grunt': 1.0,     // 默认
     'infantry': 1.0,  // 步兵
-    'bug': 0.2,       // 快速虫伤害大幅削减（因为它血量低且数量多）
+    'bug': 0.5,       // 快速虫有一定伤害（降低速度但保持威胁）
     'runner': 1.05,   // ×1.05
     'archer': 0.7,    // 弓箭手接触伤害降低（主要靠远程攻击）
     'shooter': 0.9,   // ×0.9（顶身）
@@ -289,9 +298,16 @@ export class TestGameEngine {
     
     // Boss接触伤害适度增加（降低伤害）
     const isBoss = enemyType === 'infantry_captain' || enemyType === 'fortress_guard' || 
-                   enemyType === 'void_shaman' || enemyType === 'legion_commander'
+                   enemyType === 'void_shaman' || enemyType === 'legion_commander' ||
+                   enemyType === 'frost_lord' || enemyType === 'storm_king' || enemyType === 'necromancer'
     if (isBoss) {
       damage = damage * 1.5 // Boss接触伤害1.5倍（从3倍降低）
+    }
+    
+    // **新增**：应用"受到伤害增加"的Debuff
+    const player = this.gameState?.player as any
+    if (player?.damageTakenMultiplier) {
+      damage = damage * player.damageTakenMultiplier
     }
     
     // 检查堆叠上限
@@ -299,8 +315,68 @@ export class TestGameEngine {
       return
     }
     
-    // 结算伤害
-    this.playerHealth -= damage
+    // **新增**：检查是否有临时护盾效果，优先消耗护盾
+    const specialEffects = (this.gameState?.player as any)?.specialEffects || []
+    const hasTempShield = specialEffects.includes('on_hit_temp_shield')
+    let actualDamage = damage
+    
+    if (hasTempShield && this.gameState?.player) {
+      const player = this.gameState.player as any
+      const currentShield = player.shield || 0
+      
+      if (currentShield > 0) {
+        // 优先消耗护盾
+        const shieldDamage = Math.min(currentShield, actualDamage)
+        player.shield = Math.max(0, currentShield - shieldDamage)
+        actualDamage -= shieldDamage
+        
+        // 护盾被攻击的特效（青色）
+        this.addHitEffect(this.playerX, this.playerY, false, '#00ffff')
+        
+        // 如果护盾被完全破坏
+        if (player.shield <= 0) {
+          // 护盾破坏特效
+          this.effectsSystem.createParticleEffect('magic_burst', this.playerX, this.playerY, {
+            count: 30,
+            colors: ['#00ffff', '#88ffff', '#ffffff'],
+            size: { min: 4, max: 10 },
+            speed: { min: 2, max: 6 },
+            life: { min: 400, max: 800 },
+            spread: 360,
+            fadeOut: true
+          })
+        }
+      }
+      
+      // 受伤时获得临时护盾（如果护盾已耗尽或不存在）
+      if (player.shield <= 0) {
+        const tempShieldAmount = 10 + this.currentLevel * 2 // 基础10点，每层+2点
+        const maxTempShield = 50 + this.currentLevel * 5 // 最大护盾值
+        
+        if (!player.maxShield) {
+          player.maxShield = maxTempShield
+        }
+        
+        player.shield = Math.min(tempShieldAmount, maxTempShield)
+        
+        // **新增**：临时护盾获得特效（青色光环）
+        this.effectsSystem.createParticleEffect('magic_burst', this.playerX, this.playerY, {
+          count: 40,
+          colors: ['#00ffff', '#88ffff', '#ffffff', '#aaffff'],
+          size: { min: 6, max: 12 },
+          speed: { min: 1, max: 3 },
+          life: { min: 600, max: 1200 },
+          spread: 360,
+          fadeOut: true
+        })
+        
+        // 添加屏幕消息提示
+        this.addScreenMessage('临时护盾', `+${Math.ceil(player.shield)}`, '#00ffff', 2000)
+      }
+    }
+    
+    // 结算伤害（扣除护盾后的剩余伤害）
+    this.playerHealth -= actualDamage
     if (this.playerHealth <= 0) {
       this.playerHealth = 0
       this.triggerGameOver()
@@ -317,8 +393,10 @@ export class TestGameEngine {
     // 记录伤害历史
     this.playerDamageHistory.push({ time: now, damage })
     
-    // 添加受击特效
-    this.addHitEffect(this.playerX, this.playerY, false)
+    // 添加受击特效（如果没有护盾特效）
+    if (!hasTempShield || actualDamage > 0) {
+      this.addHitEffect(this.playerX, this.playerY, false)
+    }
     
     // 播放玩家受击音效（接触伤害）
     this.audioSystem.playSoundEffect('player_hit', { volume: 0.6 })
@@ -401,10 +479,15 @@ export class TestGameEngine {
     this.canvas.style.left = '0'
     this.canvas.style.border = 'none'
     
-    console.log('Canvas设置完成:', {
+    // **精细化渲染**：启用高质量图像平滑
+    this.ctx.imageSmoothingEnabled = true
+    this.ctx.imageSmoothingQuality = 'high'
+    
+    console.log('Canvas设置完成（精细化渲染）:', {
       width: this.canvas.width,
       height: this.canvas.height,
-      ctx: this.ctx
+      ctx: this.ctx,
+      imageSmoothingEnabled: this.ctx.imageSmoothingEnabled
     })
   }
 
@@ -445,6 +528,10 @@ export class TestGameEngine {
     // 重置快速虫波次控制
     this.bugWaveCount = 0
     this.bugWaveCooldown = 0
+    // 重置更新索引
+    this.normalEnemyUpdateIndex = 0
+    this.bossUpdateFrameCounter = 0
+    this.cleanupCounter = 0
     
     // 播放背景音乐
     // 注意：如果没有通过 loadBackgroundMusic 加载音频文件，会使用程序化生成简单的背景音乐
@@ -474,17 +561,56 @@ export class TestGameEngine {
     this.render()
     this.animationId = requestAnimationFrame(this.gameLoop)
   }
-
   private update() {
     const now = Date.now()
     const deltaTime = Math.min(now - this.lastUpdateTime, 100) // 限制最大deltaTime为100ms，防止卡死恢复后异常大的时间差
     this.lastUpdateTime = now
+    // 以60FPS为基准的运动缩放，用于让移动随帧时间平滑
+    ;(this as any)._motionScale = Math.max(0.5, Math.min(2.0, deltaTime / 16.67))
     
-    // 更新视觉系统
-    this.visualRenderer.update(deltaTime)
-    this.enemyVisualSystem.update(deltaTime)
-    this.projectileVisualSystem.update(deltaTime)
+    // **关键修复**：降低视觉系统更新频率，不是每帧都更新
+    // **性能优化**：最后20秒时适度降低更新频率，但不要过度优化导致卡顿
+    if (!this.visualUpdateCounter) this.visualUpdateCounter = 0
+    this.visualUpdateCounter++
+    const timeRemaining = this.gameTime
+    const isNearEnd = timeRemaining < 20
+    // **关键修复**：最后20秒时每2帧更新一次（从3帧改为2帧，减少卡顿感）
+    const visualUpdateInterval = isNearEnd ? 2 : 2 // 最后20秒时也每2帧更新一次，保持流畅
+    if (this.visualUpdateCounter % visualUpdateInterval === 0) {
+      this.visualRenderer.update(deltaTime * visualUpdateInterval) // 补偿时间
+      this.enemyVisualSystem.update(deltaTime * visualUpdateInterval)
+      this.projectileVisualSystem.update(deltaTime * visualUpdateInterval)
+    }
+    
+    // **关键修复**：每帧都更新粒子效果，但限制更严格
+    // **性能优化**：最后20秒时更频繁清理粒子
     this.effectsSystem.update(deltaTime)
+    
+    // **性能优化**：最后20秒时每5帧强制清理一次粒子（从3帧改为5帧，减少卡顿）
+    if (isNearEnd) {
+      this.cleanupCounter++
+      if (this.cleanupCounter >= 5) {
+        this.cleanupCounter = 0
+        // 强制清理粒子效果
+        if (this.effectsSystem && (this.effectsSystem as any).particles) {
+          const particles = (this.effectsSystem as any).particles
+          if (particles && particles.length > 200) {
+            // 如果粒子超过200个，清理到150个（从150/100提高到200/150，减少卡顿）
+            (this.effectsSystem as any).particles = particles.slice(-150)
+          }
+        }
+      }
+    }
+    
+    // 更新屏幕消息
+    this.updateScreenMessages(deltaTime)
+    
+    // **关键修复**：每30帧（约0.5秒）强制清理一次，更频繁地清理防止累积
+    this.cleanupCounter++
+    if (this.cleanupCounter >= 30) {
+      this.cleanupCounter = 0
+      this.forceCleanup()
+    }
     
     // 更新时间（可能会触发关卡切换）
     // 注意：在 updateGameTime() 中如果触发 nextLevel()，会调用回调，
@@ -493,9 +619,33 @@ export class TestGameEngine {
     const oldLevelBeforeUpdate = this.currentLevel
     this.updateGameTime()
     
-    // 同步分数到gameState
+    // **关键修复**：实时同步分数，确保分数显示正确
     if (this.gameState) {
       this.gameState.score = this.score
+      // **关键修复**：实时更新最高分数和层数
+      if (!this.gameState.highestScore) this.gameState.highestScore = 0
+      if (!this.gameState.highestLevel) this.gameState.highestLevel = 0
+      
+      // **关键修复**：实时更新最高分数和层数，并自动保存
+      let shouldSave = false
+      if (this.score > this.gameState.highestScore) {
+        this.gameState.highestScore = this.score
+        shouldSave = true
+      }
+      if (this.currentLevel > this.gameState.highestLevel) {
+        this.gameState.highestLevel = this.currentLevel
+        shouldSave = true
+      }
+      
+      // **关键修复**：延迟保存，避免频繁调用（每5秒保存一次）
+      if (shouldSave) {
+        if (!this.lastScoreSaveTime) this.lastScoreSaveTime = 0
+        const now = Date.now()
+        if (now - this.lastScoreSaveTime > 5000) {
+          this.lastScoreSaveTime = now
+          this.saveHighestRecords()
+        }
+      }
       // 注意：如果关卡没有变化（没有触发 nextLevel），则正常同步
       // 如果关卡变化了（触发了 nextLevel），nextLevel() 会在回调后同步 level
       // 这里我们只在关卡没有变化时同步，避免覆盖回调中的 previousLevel
@@ -528,7 +678,7 @@ export class TestGameEngine {
     }
     
     // 处理玩家移动（先更新移动，确保位置是最新的）
-    this.updatePlayerMovement()
+    this.updatePlayerMovement(deltaTime)
     
     // **关键修复**：在碰撞检测前，同步最新的玩家位置
     // 如果gameState中有更新的位置（比如从Vue组件传来的），使用那个位置
@@ -545,22 +695,8 @@ export class TestGameEngine {
       this.gameState.player.position.y = this.playerY
     }
     
-    // **性能监控**：定期输出性能指标（降低频率）
-    if (Math.random() < 0.005) { // 0.5%的概率输出，避免日志过多
-      const perfInfo = {
-        level: this.currentLevel,
-        enemies: this.enemies.length,
-        projectiles: this.projectiles.length,
-        pendingEnemies: this.pendingEnemies.length,
-        effects: this.effects.length
-      }
-      // 如果数量异常，输出警告
-      if (perfInfo.enemies > 120 || perfInfo.projectiles > 400) {
-        console.warn(`[性能警告] 关卡${perfInfo.level}:`, perfInfo)
-      } else {
-        console.log(`[性能] 关卡${perfInfo.level}:`, perfInfo)
-      }
-    }
+    // **性能监控**：完全禁用，避免任何性能开销
+    // （已移除性能监控代码以提升性能）
     
     // 处理生命回复
     this.updateHealthRegen()
@@ -573,34 +709,164 @@ export class TestGameEngine {
     }
     
     // 更新敌人（确保在添加新敌人后才更新）
+    // **关键修复**：将Boss从批处理中排除，单独处理Boss更新
     // 性能优化：根据敌人数量动态调整每帧更新数量，敌人多时减少更新数量
-    if (this.enemies.length > 0) {
-      // 敌人少时更新更多，敌人多时更新更少，确保流畅度
-      const enemyCount = this.enemies.length
-      let enemyUpdateBatch: number
-      if (enemyCount <= 50) {
-        enemyUpdateBatch = Math.min(enemyCount, 30) // 敌人少时每帧更新30个
-      } else if (enemyCount <= 100) {
-        enemyUpdateBatch = Math.min(enemyCount, 20) // 中等数量时更新20个
-      } else {
-        enemyUpdateBatch = Math.min(enemyCount, 15) // 敌人多时只更新15个
+    // 进一步优化：敌人超过100时，每帧只更新更少的敌人
+    
+    // 先分离Boss和普通敌人
+    const bossTypes = ['infantry_captain', 'fortress_guard', 'void_shaman', 'legion_commander']
+    const bosses: Array<{ enemy: any; index: number }> = []
+    const normalEnemies: Array<{ enemy: any; index: number }> = []
+    
+    this.enemies.forEach((enemy, index) => {
+      if (enemy && enemy.type && bossTypes.includes(enemy.type)) {
+        bosses.push({ enemy, index })
+      } else if (enemy) {
+        normalEnemies.push({ enemy, index })
       }
-      
-      for (let i = 0; i < enemyUpdateBatch && this.enemies.length > 0; i++) {
-        const currentLength = this.enemies.length
-        if (currentLength === 0) break // 防止长度变为0时出错
-        const index = (this.enemyUpdateIndex + i) % currentLength
-        if (index >= 0 && index < this.enemies.length && this.enemies[index]) {
-          this.updateEnemyAI(this.enemies[index], index)
+    })
+    
+    // **关键修复**：单独处理Boss，每帧都更新Boss以确保流畅移动（修复卡顿问题）
+    if (bosses.length > 0) {
+      // **关键修复**：每帧都更新所有Boss，确保移动流畅不卡顿
+      for (const bossData of bosses) {
+        if (bossData && bossData.enemy) {
+          try {
+            this.updateEnemyAI(bossData.enemy, bossData.index)
+          } catch (error) {
+            console.error(`[updateEnemyAI] Boss更新错误:`, error, `Boss类型: ${bossData.enemy.type}`)
+          }
         }
       }
-      if (this.enemies.length > 0) {
-        this.enemyUpdateIndex = (this.enemyUpdateIndex + enemyUpdateBatch) % this.enemies.length
+    }
+    
+    // 批处理更新普通敌人（排除Boss）
+    if (normalEnemies.length > 0) {
+      // **关键修复**：平衡性能和流畅度，根据敌人数量和时间动态调整更新频率
+      const enemyCount = normalEnemies.length
+      const timeRemaining = this.gameTime
+      const isNearEnd = timeRemaining < 20
+      let enemyUpdateBatch: number
+      if (isNearEnd) {
+        // 最后20秒时，适度减少敌人更新数量（不要过度优化导致卡顿）
+        if (enemyCount <= 30) {
+          enemyUpdateBatch = Math.min(enemyCount, 25) // 最后20秒时减少到25个（从15个提高）
+        } else if (enemyCount <= 50) {
+          enemyUpdateBatch = Math.min(enemyCount, 20) // 最后20秒时减少到20个（从12个提高）
+        } else if (enemyCount <= 70) {
+          enemyUpdateBatch = Math.min(enemyCount, 18) // 最后20秒时减少到18个（从10个提高）
+        } else {
+          enemyUpdateBatch = Math.min(enemyCount, 15) // 最后20秒时减少到15个（从8个提高）
+        }
       } else {
-        this.enemyUpdateIndex = 0
+        // 正常时保持原有逻辑
+        if (enemyCount <= 30) {
+          enemyUpdateBatch = Math.min(enemyCount, 30) // 敌人少时每帧更新30个（全部更新）
+        } else if (enemyCount <= 50) {
+          enemyUpdateBatch = Math.min(enemyCount, 25) // 中等数量时更新25个
+        } else if (enemyCount <= 70) {
+          enemyUpdateBatch = Math.min(enemyCount, 20) // 敌人较多时更新20个
+        } else {
+          enemyUpdateBatch = Math.min(enemyCount, 18) // 敌人很多时更新18个
+        }
+      }
+      
+      // **性能优化**：添加安全检查，防止无限循环
+      let updateCount = 0
+      const maxUpdateAttempts = enemyUpdateBatch * 2 // 防止无限循环
+      
+      // 使用normalEnemies的索引
+      if (!this.normalEnemyUpdateIndex) this.normalEnemyUpdateIndex = 0
+      
+      for (let i = 0; i < enemyUpdateBatch && normalEnemies.length > 0 && updateCount < maxUpdateAttempts; i++) {
+        const currentLength = normalEnemies.length
+        if (currentLength === 0) break // 防止长度变为0时出错
+        
+        const normalIndex = (this.normalEnemyUpdateIndex + i) % currentLength
+        if (normalIndex >= 0 && normalIndex < normalEnemies.length && normalEnemies[normalIndex]) {
+          const { enemy, index } = normalEnemies[normalIndex]
+          try {
+            this.updateEnemyAI(enemy, index)
+            updateCount++
+          } catch (error) {
+            console.error(`[updateEnemyAI] 错误:`, error, `敌人索引: ${index}`)
+            // 如果某个敌人更新出错，跳过它
+            break
+          }
+        }
+      }
+      if (normalEnemies.length > 0) {
+        this.normalEnemyUpdateIndex = (this.normalEnemyUpdateIndex + enemyUpdateBatch) % normalEnemies.length
+      } else {
+        this.normalEnemyUpdateIndex = 0
       }
     }
 
+    // **关键修复**：统一清理死亡的敌人，防止内存泄漏和性能问题
+    // 使用反向遍历，避免索引问题
+    for (let i = this.enemies.length - 1; i >= 0; i--) {
+      const enemy = this.enemies[i]
+      if (enemy && enemy.health <= 0) {
+        // **关键修复**：在清理前检查是否是Boss并设置标志
+        const bossTypes = ['infantry_captain', 'fortress_guard', 'void_shaman', 'legion_commander', 'boss']
+        const isBoss = enemy.type && bossTypes.includes(enemy.type)
+        
+        // **关键修复**：如果敌人是Boss且标志未设置，检查是否所有Boss都被击败
+        if (isBoss && this.gameState) {
+          // 检查当前层是否还有存活的Boss（注意：此时enemy还未从数组中移除）
+          const remainingBosses = this.enemies.filter(e => 
+            e !== enemy && e.type && bossTypes.includes(e.type) && e.health > 0
+          )
+          
+          // 只有当所有Boss都被击败后，才设置标志
+          if (remainingBosses.length === 0) {
+          if (!this.gameState.bossDefeated || this.gameState.bossDefeated !== this.currentLevel) {
+            this.gameState.bossDefeated = this.currentLevel
+            this.gameState.hasDefeatedBoss = true
+              console.log(`[Boss死亡-清理] ✅ 第${this.currentLevel}层所有Boss都被击败，设置bossDefeated=${this.currentLevel}`)
+            }
+          } else {
+            console.log(`[Boss死亡-清理] 第${this.currentLevel}层Boss(${enemy.type})在清理时被发现，但还有${remainingBosses.length}个Boss存活，暂不设置标志`)
+          }
+        }
+        
+        // **关键修复**：确保所有死亡的敌人都添加分数（如果还未添加）
+        // 检查是否已经添加过分数（通过检查敌人是否被标记）
+        if (!(enemy as any).scoreAdded) {
+          const isElite = enemy.isElite
+          const scoreGain = isElite ? 50 : 10
+          this.score += scoreGain
+          // 实时同步分数到gameState
+          if (this.gameState) {
+            this.gameState.score = this.score
+          }
+          // 金币与分数一致
+          if (this.gameState && this.gameState.player) {
+            this.gameState.player.gold = (this.gameState.player.gold || 0) + scoreGain
+          }
+          // 标记已添加分数，避免重复添加
+          (enemy as any).scoreAdded = true
+          // 调试日志（降低频率，避免日志过多）
+          if (Math.random() < 0.1) { // 10%概率输出日志
+            console.log(`[分数] 敌人死亡，添加分数: ${scoreGain}，当前总分: ${this.score}`)
+          }
+        }
+        
+        // 清理Boss特殊数据
+        if (enemy.type === 'fortress_guard') {
+          const hiveMother = enemy as any
+          if (hiveMother) {
+            if (hiveMother.pendingEggs) hiveMother.pendingEggs = []
+            if (hiveMother.stormZones) hiveMother.stormZones = []
+          }
+        }
+        this.enemies.splice(i, 1)
+      }
+    }
+    
+    // **关键修复**：处理延迟发射的投射物（在投射物更新前）
+    this.processDelayedRangedAttacks()
+    
     // 更新投射物（在玩家位置更新后）
     this.updateProjectiles()
 
@@ -645,7 +911,8 @@ export class TestGameEngine {
     }
     
     // 一层开始时的初始间隔（很慢，让玩家适应）
-    const initialSpawnInterval = 150 // 约2.5秒开始
+    // **性能优化**：开局更慢，避免立即生成太多敌人
+    const initialSpawnInterval = 200 // 约3.3秒开始（从150增加到200）
     
     // 一层内逐渐加速：从150帧逐渐降到maxSpeedInterval
     // 使用平滑曲线，在30秒内完成加速
@@ -694,28 +961,74 @@ export class TestGameEngine {
     }
 
     const layer = this.currentLevel
-    // Boss层：第5/10/15/20层在本层首次生成事件时强制生成Boss（居中）
-    if ((layer === 5 || layer === 10 || layer === 15 || layer === 20) && !this.bossSpawnedInLevel) {
+    // Boss层判断：每5层一个Boss层（5, 10, 15, 20, 25, 30, 35, 40...）
+    const isBossLevel = layer % 5 === 0
+    
+    if (isBossLevel) {
+      // 计算本层目标Boss数量
+      if (layer <= 20) {
+        // 前20层：每5层1个Boss
+        this.targetBossCount = 1
+      } else {
+        // 20层之后：交替出现2个和3个Boss
+        // **修复**：第25层应该是2个，第30层是3个，第35层是2个，第40层是3个，以此类推
+        const bossTier = Math.floor((layer - 20) / 5) // 第25层=1, 第30层=2, 第35层=3, 第40层=4...
+        if (bossTier % 2 === 1) {
+          // 奇数tier（25层, 35层, 45层...）：2个Boss
+          this.targetBossCount = 2
+        } else {
+          // 偶数tier（30层, 40层, 50层...）：3个Boss
+          this.targetBossCount = 3
+        }
+      }
+      
+      // 如果还没生成完所有Boss，继续生成
+      if (this.bossCountInLevel < this.targetBossCount) {
       // 检查敌人数量，如果已经很多，等待清理一些再生成Boss
       if (this.enemies.length >= this.MAX_ENEMIES * 0.9) {
         console.log(`[Boss生成] 关卡${layer}: 敌人数量过多(${this.enemies.length})，延迟生成Boss`)
         return // 延迟生成，等待敌人数量减少
       }
       
-      const centerX = this.canvas.width / 2
-      const centerY = this.canvas.height / 2
+      // **修复**：Boss从地图边缘生成，而不是中心
+      // 随机选择边缘位置（上、下、左、右）
+      const side = Math.floor(Math.random() * 4)
+      let bossX = 0
+      let bossY = 0
+      
+      switch (side) {
+        case 0: // 上边缘
+          bossX = Math.random() * this.canvas.width
+          bossY = -30
+          break
+        case 1: // 右边缘
+          bossX = this.canvas.width + 30
+          bossY = Math.random() * this.canvas.height
+          break
+        case 2: // 下边缘
+          bossX = Math.random() * this.canvas.width
+          bossY = this.canvas.height + 30
+          break
+        case 3: // 左边缘
+          bossX = -30
+          bossY = Math.random() * this.canvas.height
+          break
+      }
+      
       const baseHealth = 20 * (layer <= 3 ? 1.0 + (layer - 1) * 0.05 : (layer <= 10 ? 1.1 + (layer - 3) * 0.1 : 1.8 + Math.sqrt((layer - 10) * 2) * 0.2))
-      const baseSize = 18 + layer * 0.5
-      const boss = this.createBoss(layer, centerX, centerY, baseHealth, baseSize)
+        const baseSize = 22 + layer * 0.6
+      const boss = this.createBoss(layer, bossX, bossY, baseHealth, baseSize)
       if (boss) {
         // 确保Boss不会导致超出敌人上限
         if (this.enemies.length < this.MAX_ENEMIES) {
           this.enemies.push(boss)
-          this.bossSpawnedInLevel = true
-          console.log(`[Boss生成] 在第${layer}层生成Boss: ${boss.type}, 当前敌人数: ${this.enemies.length}`)
+            this.bossCountInLevel++
+            this.bossSpawnedInLevel = this.bossCountInLevel >= this.targetBossCount
+            console.log(`[Boss生成] 在第${layer}层从边缘生成Boss ${this.bossCountInLevel}/${this.targetBossCount}: ${boss.type}, 位置: (${bossX.toFixed(0)}, ${bossY.toFixed(0)}), 当前敌人数: ${this.enemies.length}`)
           return
         } else {
           console.warn(`[Boss生成] 关卡${layer}: 敌人数量已达上限，无法生成Boss`)
+          }
         }
       }
     }
@@ -772,8 +1085,7 @@ export class TestGameEngine {
         : []),
       
       // 阶段2（新敌人权重较低，逐步增加）
-      { type: 'archer', weight: 30, layerStart: 7 }, // 降低权重从60到30，延迟出现从第5层到第7层
-      { type: 'sniper', weight: 35, layerStart: 8 }, // 降低权重从70到35，延迟出现从第4层到第8层
+      { type: 'archer', weight: 50, layerStart: 5 }, // 弓箭手，第5层出现
       { type: 'shieldguard', weight: 50, layerStart: 7 },
       { type: 'bomb_bat', weight: 40, layerStart: 9 },
       
@@ -842,70 +1154,64 @@ export class TestGameEngine {
     switch (enemyType) {
       case 'infantry':
         baseSpeed = 0.7
-        size = baseSize
+        size = baseSize * 1.2  // 增大体型
         health = baseHealth * 1.0
         color = '#ff4444'
         break
         
       case 'bug':
         baseSpeed = 2.0
-        size = baseSize * 0.7
+        size = baseSize * 0.9  // 增大体型
         health = Math.max(1, baseHealth * 0.1) // 大幅降低血量，保证一击必杀
         color = '#44ff44'
         break
         
       case 'archer':
         baseSpeed = 0.8
-        size = baseSize * 0.9
+        size = baseSize * 1.1  // 增大体型
         health = baseHealth * 0.8
         color = '#4444ff'
         break
         
-      case 'sniper':
-        baseSpeed = 0.6 // 狙击兵移动较慢
-        size = baseSize * 1.0
-        health = baseHealth * 1.0 // 中等血量
-        color = '#ff4444' // 红色，表示高威胁
-        break
         
       case 'shieldguard':
         baseSpeed = 0.4
-        size = baseSize * 1.6
+        size = baseSize * 1.8  // 增大体型
         health = baseHealth * 2.5
         color = '#888888'
         break
         
       case 'bomb_bat':
         baseSpeed = 1.2
-        size = baseSize * 0.8
+        size = baseSize * 1.0  // 增大体型
         health = baseHealth * 0.6
         color = '#884488'
         break
         
       case 'healer':
         baseSpeed = 0.6
-        size = baseSize * 1.0
+        size = baseSize * 1.2  // 增大体型
         health = baseHealth * 1.2
         color = '#00ff88'
         break
         
       case 'grenadier':
         baseSpeed = 0.5
-        size = baseSize * 1.1
+        size = baseSize * 1.3  // 增大体型
         health = baseHealth * 1.8
         color = '#ff8800'
         break
         
       case 'summoner':
         baseSpeed = 0.5
-        size = baseSize * 1.2
+        size = baseSize * 1.4  // 增大体型
         health = baseHealth * 2.0
         color = '#ff00ff'
         break
         
       case 'phantom':
         baseSpeed = 1.8
-        size = baseSize * 0.7
+        size = baseSize * 0.9  // 增大体型
         health = baseHealth * 0.9
         color = '#9900ff'
         break
@@ -921,7 +1227,7 @@ export class TestGameEngine {
     // 应用层数增长：移速随层数增长
     const finalSpeed = baseSpeed * speedMultiplier
     
-    const hasRangedAttack = ['archer', 'sniper', 'healer', 'grenadier', 'boss'].includes(enemyType)
+    const hasRangedAttack = ['archer', 'healer', 'grenadier', 'boss'].includes(enemyType)
     const hasSkills = ['healer', 'grenadier', 'summoner', 'phantom', 'boss'].includes(enemyType)
     
     // 基础攻击冷却和技能冷却，然后应用层数增长（冷却减少 = 攻击更快）
@@ -964,34 +1270,44 @@ export class TestGameEngine {
   // 创建Boss
   private createBoss(layer: number, x: number, y: number, baseHealth: number, baseSize: number): any {
     const now = Date.now()
+    
+    // 计算难度倍数（20层之后逐渐递增）
+    let difficultyMultiplier = 1.0
+    if (layer > 20) {
+      // 每5层增加20%难度
+      const tier = Math.floor((layer - 20) / 5)
+      difficultyMultiplier = 1.0 + tier * 0.2
+    }
+    
+    // 特定层数的Boss（保持原有设计）
     if (layer === 5) {
-      // 步兵队长（重装指挥官）
+      // 步兵队长（重装指挥官）- 大幅降低强度，确保可以击败
       return {
         x, y,
-        size: Math.floor(baseSize * 1.8),
+        size: Math.floor(baseSize * 1.3),
         color: '#ff0000',
-        health: Math.floor(baseHealth * 25), // 大幅增加血量：25倍
-        maxHealth: Math.floor(baseHealth * 25),
+        health: Math.floor(baseHealth * 15), // 降低血量：从25倍降到15倍
+        maxHealth: Math.floor(baseHealth * 15),
         type: 'infantry_captain',
         isElite: true,
-        speed: 0.8,
+        speed: 3.5,
         lastAttack: now - 3000, // 初始化时允许立即攻击
-        attackCooldown: 2000,
+        attackCooldown: 3000, // 增加攻击冷却：从2000ms增加到3000ms
         lastSkill: now,
-        skillCooldown: 12000,
+        skillCooldown: 18000, // 增加技能冷却：从12000ms增加到18000ms
         icdUntil: 0
       }
     } else if (layer === 10) {
       // 堡垒守卫（虫巢母体）
       return {
         x, y,
-        size: Math.floor(baseSize * 2.5),
+        size: Math.floor(baseSize * 1.6),
         color: '#884400',
         health: Math.floor(baseHealth * 40), // 大幅增加血量：40倍
         maxHealth: Math.floor(baseHealth * 40),
         type: 'fortress_guard',
         isElite: true,
-        speed: 0.3,
+        speed: 3.0, // 进一步提高基础速度（从2.0提高到3.0）
         shield: 50,
         maxShield: 50,
         shieldUp: false,
@@ -999,19 +1315,20 @@ export class TestGameEngine {
         skillCooldown: 5000,
         lastBoomHatch: now - 8000, // 允许第一次孵化更快
         icdUntil: 0,
-        pendingEggs: [] // 待孵化的虫卵列表
+        pendingEggs: [], // 待孵化的虫卵列表
+        stormZones: [] // 风暴区域列表
       }
     } else if (layer === 15) {
       // 虚空巫医（暗影刺客）
       return {
         x, y,
-        size: Math.floor(baseSize * 2.0),
+        size: Math.floor(baseSize * 1.4),
         color: '#ff00ff',
         health: Math.floor(baseHealth * 50), // 大幅增加血量：50倍
         maxHealth: Math.floor(baseHealth * 50),
         type: 'void_shaman',
         isElite: true,
-        speed: 0.5,
+        speed: 3.2, // 进一步提高基础速度（从2.2提高到3.2）
         lastAttack: now - 5000,
         attackCooldown: 2000,
         lastSkill: now,
@@ -1025,13 +1342,13 @@ export class TestGameEngine {
       // 军团统帅（混沌造物）
       return {
         x, y,
-        size: Math.floor(baseSize * 2.8),
+        size: Math.floor(baseSize * 1.8),
         color: '#000000',
-        health: Math.floor(baseHealth * 80), // 大幅增加血量：80倍
-        maxHealth: Math.floor(baseHealth * 80),
+        health: Math.floor(baseHealth * 50), // 降低血量：50倍（从80倍降低）
+        maxHealth: Math.floor(baseHealth * 50),
         type: 'legion_commander',
         isElite: true,
-        speed: 0.6,
+        speed: 3.5, // 进一步提高基础速度（从2.4提高到3.5）
         lastAttack: now - 3000,
         attackCooldown: 2000,
         lastSkill: now,
@@ -1039,11 +1356,143 @@ export class TestGameEngine {
         phase: 1,
         icdUntil: 0
       }
+    } else if (layer > 20 && layer % 5 === 0) {
+      // 20层之后的Boss：随机选择Boss类型（包括新的boss类型），并应用难度递增
+      const bossTypes = ['infantry_captain', 'fortress_guard', 'void_shaman', 'legion_commander', 'frost_lord', 'storm_king', 'necromancer']
+      const selectedType = bossTypes[Math.floor(Math.random() * bossTypes.length)]
+      
+      // 根据选择的类型创建Boss，并应用难度倍数
+      if (selectedType === 'infantry_captain') {
+        return {
+          x, y,
+          size: Math.floor(baseSize * 1.3 * difficultyMultiplier),
+          color: '#ff0000',
+          health: Math.floor(baseHealth * 25 * difficultyMultiplier),
+          maxHealth: Math.floor(baseHealth * 25 * difficultyMultiplier),
+          type: 'infantry_captain',
+          isElite: true,
+          speed: 3.5 * difficultyMultiplier,
+          lastAttack: now - 3000,
+          attackCooldown: Math.max(1500, 2000 / difficultyMultiplier), // 攻速提升
+          lastSkill: now,
+          skillCooldown: Math.max(8000, 12000 / difficultyMultiplier), // 技能冷却缩短
+          icdUntil: 0
+        }
+      } else if (selectedType === 'fortress_guard') {
+        return {
+          x, y,
+          size: Math.floor(baseSize * 1.6 * difficultyMultiplier),
+          color: '#884400',
+          health: Math.floor(baseHealth * 40 * difficultyMultiplier),
+          maxHealth: Math.floor(baseHealth * 40 * difficultyMultiplier),
+          type: 'fortress_guard',
+          isElite: true,
+          speed: 3.0 * difficultyMultiplier,
+          shield: Math.floor(50 * difficultyMultiplier),
+          maxShield: Math.floor(50 * difficultyMultiplier),
+          shieldUp: false,
+          lastSkill: now,
+          skillCooldown: Math.max(3000, 5000 / difficultyMultiplier),
+          lastBoomHatch: now - 8000,
+          icdUntil: 0,
+          pendingEggs: [],
+          stormZones: []
+        }
+      } else if (selectedType === 'void_shaman') {
+        return {
+          x, y,
+          size: Math.floor(baseSize * 1.4 * difficultyMultiplier),
+          color: '#ff00ff',
+          health: Math.floor(baseHealth * 50 * difficultyMultiplier),
+          maxHealth: Math.floor(baseHealth * 50 * difficultyMultiplier),
+          type: 'void_shaman',
+          isElite: true,
+          speed: 3.2 * difficultyMultiplier,
+          lastAttack: now - 5000,
+          attackCooldown: Math.max(1500, 2000 / difficultyMultiplier),
+          lastSkill: now,
+          skillCooldown: Math.max(12000, 18000 / difficultyMultiplier),
+          invisibleTimer: now,
+          isInvisible: true,
+          lastSlowingField: now,
+          icdUntil: 0
+        }
+      } else if (selectedType === 'legion_commander') {
+        return {
+          x, y,
+          size: Math.floor(baseSize * 1.8 * difficultyMultiplier),
+          color: '#000000',
+          health: Math.floor(baseHealth * 50 * difficultyMultiplier),
+          maxHealth: Math.floor(baseHealth * 50 * difficultyMultiplier),
+          type: 'legion_commander',
+          isElite: true,
+          speed: 3.5 * difficultyMultiplier,
+          lastAttack: now - 3000,
+          attackCooldown: Math.max(1500, 2000 / difficultyMultiplier),
+          lastSkill: now,
+          skillCooldown: Math.max(6000, 9000 / difficultyMultiplier),
+          phase: 1,
+          icdUntil: 0
+        }
+      } else if (selectedType === 'frost_lord') {
+        // 冰霜领主：使用冰霜攻击，可以冻结玩家
+        return {
+          x, y,
+          size: Math.floor(baseSize * 1.5 * difficultyMultiplier),
+          color: '#88ddff',
+          health: Math.floor(baseHealth * 45 * difficultyMultiplier),
+          maxHealth: Math.floor(baseHealth * 45 * difficultyMultiplier),
+          type: 'frost_lord',
+          isElite: true,
+          speed: 2.8 * difficultyMultiplier,
+          lastAttack: now - 3000,
+          attackCooldown: Math.max(1500, 2000 / difficultyMultiplier),
+          lastSkill: now,
+          skillCooldown: Math.max(8000, 12000 / difficultyMultiplier),
+          icdUntil: 0,
+          frostZones: [] // 冰霜区域列表
+        }
+      } else if (selectedType === 'storm_king') {
+        // 风暴之王：使用闪电攻击，可以召唤风暴
+        return {
+          x, y,
+          size: Math.floor(baseSize * 1.6 * difficultyMultiplier),
+          color: '#ffff00',
+          health: Math.floor(baseHealth * 42 * difficultyMultiplier),
+          maxHealth: Math.floor(baseHealth * 42 * difficultyMultiplier),
+          type: 'storm_king',
+          isElite: true,
+          speed: 3.2 * difficultyMultiplier,
+          lastAttack: now - 3000,
+          attackCooldown: Math.max(1200, 1800 / difficultyMultiplier),
+          lastSkill: now,
+          skillCooldown: Math.max(7000, 10000 / difficultyMultiplier),
+          icdUntil: 0,
+          lightningChains: [] // 闪电链列表
+        }
+      } else if (selectedType === 'necromancer') {
+        // 死灵法师：召唤骷髅，使用死亡魔法
+        return {
+          x, y,
+          size: Math.floor(baseSize * 1.4 * difficultyMultiplier),
+          color: '#660066',
+          health: Math.floor(baseHealth * 38 * difficultyMultiplier),
+          maxHealth: Math.floor(baseHealth * 38 * difficultyMultiplier),
+          type: 'necromancer',
+          isElite: true,
+          speed: 2.5 * difficultyMultiplier,
+          lastAttack: now - 3000,
+          attackCooldown: Math.max(1500, 2200 / difficultyMultiplier),
+          lastSkill: now,
+          skillCooldown: Math.max(6000, 9000 / difficultyMultiplier),
+          icdUntil: 0,
+          summonedSkeletons: [] // 召唤的骷髅列表
+        }
+      }
     }
     
     return null
   }
-  
   // 创建精英敌人
   private createEliteEnemy(layer: number, x: number, y: number, baseHealth: number, baseSize: number): any {
     const now = Date.now()
@@ -1110,7 +1559,6 @@ export class TestGameEngine {
       case 'infantry': return 0
       case 'bug': return 0
       case 'archer': return 4500 // 增加攻击冷却从3000ms到4500ms
-      case 'sniper': return 3000 // 增加攻击冷却从1500ms到3000ms
       case 'shieldguard': return 0
       case 'bomb_bat': return 0
       case 'healer': return 3000
@@ -1136,6 +1584,10 @@ export class TestGameEngine {
 
   // 更新敌人的AI和行为
   private updateEnemyAI(enemy: any, index: number) {
+    // **新增**：虫卵不需要AI更新（不移动，不攻击）
+    if (enemy.type === 'egg' || enemy.isEgg) {
+      return
+    }
     // 更新敌人的状态效果（如冻结、中毒等）
     if (enemy.statusEffects && Array.isArray(enemy.statusEffects)) {
       const now = Date.now()
@@ -1201,7 +1653,7 @@ export class TestGameEngine {
         if (distanceSq > 0) {
           const dist = getDistance()
           if (dist > 0) {
-            const speed = enemy.speed || 0.7
+            const speed = (enemy.speed || 0.7) * ((this as any)._motionScale || 1)
             enemy.x += (dx / dist) * speed
             enemy.y += (dy / dist) * speed
           }
@@ -1214,9 +1666,9 @@ export class TestGameEngine {
         if (distanceSq > 0) {
           const dist = getDistance()
           if (dist > 0) {
-            const speed = (enemy.speed || 2.0) * 2.0
-            enemy.x += (dx / dist) * speed
-            enemy.y += (dy / dist) * speed
+          const speed = ((enemy.speed || 2.0) * 1.2) * ((this as any)._motionScale || 1)  // 进一步降低冲锋速度
+          enemy.x += (dx / dist) * speed
+          enemy.y += (dy / dist) * speed
           }
         }
         this.handleContactDamage(enemy, this.currentLevel)
@@ -1229,8 +1681,9 @@ export class TestGameEngine {
         if (distanceSq > archerRangeSq) {
           const dist = getDistance()
           if (dist > 0) {
-            enemy.x += (dx / dist) * (enemy.speed || 0.8)
-            enemy.y += (dy / dist) * (enemy.speed || 0.8)
+            const ms = ((this as any)._motionScale || 1)
+            enemy.x += (dx / dist) * (enemy.speed || 0.8) * ms
+            enemy.y += (dy / dist) * (enemy.speed || 0.8) * ms
           }
         } else {
           const keepDistance = this.ENEMY_SKILL_RANGES.ARCHER_KEEP_DISTANCE
@@ -1238,8 +1691,9 @@ export class TestGameEngine {
           if (distanceSq < keepDistanceSq) {
             const dist = getDistance()
             if (dist > 0) {
-              enemy.x -= (dx / dist) * 0.3
-              enemy.y -= (dy / dist) * 0.3
+              const ms = ((this as any)._motionScale || 1)
+              enemy.x -= (dx / dist) * 0.3 * ms
+              enemy.y -= (dy / dist) * 0.3 * ms
             }
           }
         }
@@ -1319,6 +1773,9 @@ export class TestGameEngine {
             if (enemyIndex !== -1) {
               this.enemies.splice(enemyIndex, 1)
               this.score += 15 // 主动自爆给予额外分数
+              if (this.gameState && this.gameState.player) {
+                this.gameState.player.gold = (this.gameState.player.gold || 0) + 15
+              }
             }
             return // 不执行接触伤害，因为已经自爆了
           }
@@ -1338,6 +1795,7 @@ export class TestGameEngine {
           // **性能优化**：使用传统for循环，限制检查数量
           const enemyCount = this.enemies.length
           const maxHealChecks = Math.min(enemyCount, 20) // 最多检查20个敌人
+          let healedCount = 0
           for (let i = 0; i < maxHealChecks; i++) {
             const other = this.enemies[i]
             if (other !== enemy && other.health < other.maxHealth) {
@@ -1346,10 +1804,34 @@ export class TestGameEngine {
               const distSq = dxx * dxx + dyy * dyy
               if (distSq < healRangeSq) {
                 other.health = Math.min(other.maxHealth, other.health + 5 + this.currentLevel)
+                healedCount++
                 // 添加治疗效果
                 this.addHitEffect(other.x, other.y, false, '#00ff88')
               }
             }
+          }
+          // 添加明显的范围回复特效
+          if (healedCount > 0) {
+            // 创建治疗光环特效
+            this.effectsSystem.createParticleEffect('magic_burst', enemy.x, enemy.y, {
+              count: 40,
+              spread: 360,
+              speed: { min: 1, max: 3 },
+              size: { min: 4, max: 8 },
+              life: { min: 600, max: 1200 },
+              colors: ['#00ff88', '#00ffaa', '#88ffaa', '#ffffff'],
+              fadeOut: true
+            })
+            // 添加治疗范围圆环特效
+            this.effectsSystem.createParticleEffect('energy_discharge', enemy.x, enemy.y, {
+              count: 30,
+              spread: 360,
+              speed: { min: 0.5, max: 1.5 },
+              size: { min: 6, max: 12 },
+              life: { min: 800, max: 1500 },
+              colors: ['#00ff88', '#00ffaa'],
+              fadeOut: true
+            })
           }
           healerEnemy.lastSkill = now
         }
@@ -1504,43 +1986,6 @@ export class TestGameEngine {
         }
           break
 
-      case 'sniper':
-        // 狙击手：远程攻击，有预警线
-        // 确保攻击冷却属性存在
-        if (!enemy.lastAttack) enemy.lastAttack = now - 5000 // 让狙击兵立即可以攻击
-        if (!enemy.attackCooldown) enemy.attackCooldown = this.getAttackCooldown('sniper')
-        
-        const sniperRange = this.ENEMY_SKILL_RANGES.SNIPER_ATTACK_RANGE
-        const sniperRangeSq = sniperRange * sniperRange
-        if (distanceSq > sniperRangeSq) {
-          // 在攻击范围外，朝玩家移动
-          const dist = getDistance()
-          if (dist > 0) {
-            enemy.x += (dx / dist) * (enemy.speed || 0.6)
-            enemy.y += (dy / dist) * (enemy.speed || 0.6)
-          }
-        } else {
-          // 在攻击范围内，保持距离并攻击
-          const keepDistance = this.ENEMY_SKILL_RANGES.ARCHER_KEEP_DISTANCE
-          const keepDistanceSq = keepDistance * keepDistance
-          if (distanceSq < keepDistanceSq) {
-            const dist = getDistance()
-            if (dist > 0) {
-              enemy.x -= (dx / dist) * 0.3
-              enemy.y -= (dy / dist) * 0.3
-            }
-          }
-          
-          // 远程攻击
-          if (now - enemy.lastAttack >= enemy.attackCooldown) {
-            const dist = getDistance()
-            console.log(`🎯 狙击兵开火！距离: ${dist.toFixed(1)}`)
-            this.enemyRangedAttack(enemy)
-            enemy.lastAttack = now
-          }
-        }
-        break
-
         case 'support':
         // 支援者：为附近友军加buff
         // **性能优化**：限制检查数量，使用传统for循环
@@ -1641,13 +2086,58 @@ export class TestGameEngine {
           bossEnemy.speed *= 1.2
         }
         
-        // Boss移动逻辑
+        // Boss移动逻辑（保持距离+侧移，不贴脸）
         if (distanceSq > 0) {
           const dist = getDistance()
           if (dist > 0) {
-            const speed = (enemy.speed || 0.6) * (1 + (bossEnemy.phase - 1) * 0.3)
-            enemy.x += (dx / dist) * speed
-            enemy.y += (dy / dist) * speed
+            // 大幅降低Boss基础速度，并降低阶段加成，避免过快
+            const base = Math.min(enemy.speed || 0.45, 0.35) // 从0.6降低到0.35
+            const phaseScale = 1 + Math.max(0, (bossEnemy.phase || 1) - 1) * 0.08 // 从0.15降低到0.08
+            const speed = base * phaseScale * ((this as any)._motionScale || 1)
+            
+            // 目标维持距离（停靠距离），显著增大，让Boss在更远距离就停止接近
+            const contactDist = 15 + (enemy.size || 24)
+            const stopDist = Math.max(contactDist + 120, 180) // 从120增加到180
+            const minDist = contactDist + 40 // 从24增加到40，最小分离距离更大
+            
+            const nx = dx / (dist || 1)
+            const ny = dy / (dist || 1)
+            
+            if (dist > stopDist + 15) {
+              // 距离过远：向玩家靠近，但速度较慢
+              const approachSpeed = speed * 0.7 // 接近时速度降低30%
+              enemy.x += nx * approachSpeed
+              enemy.y += ny * approachSpeed
+            } else if (dist < stopDist - 15) {
+              // 距离过近：后退到安全距离
+              const retreatSpeed = speed * 0.8 // 后退速度稍快
+              enemy.x -= nx * retreatSpeed
+              enemy.y -= ny * retreatSpeed
+            } else {
+              // 距离合适：大幅减速或停止，偶尔小幅侧移
+              // 只在30%的时间内进行小幅侧移，大部分时间保持静止
+              if (Math.random() < 0.3) {
+                const strafe = speed * 0.3 // 侧移速度大幅降低到30%
+              enemy.x += -ny * strafe
+              enemy.y += nx * strafe
+              }
+              // 70%的时间保持静止，不移动
+            }
+            
+            // 强制最小分离，避免进入接触伤害半径
+            const actualDistX = enemy.x - this.playerX
+            const actualDistY = enemy.y - this.playerY
+            const actualDist = Math.hypot(actualDistX, actualDistY) || 1
+            if (actualDist < minDist) {
+              const nxx = actualDistX / actualDist
+              const nyy = actualDistY / actualDist
+              enemy.x = this.playerX + nxx * minDist
+              enemy.y = this.playerY + nyy * minDist
+              // 在边界上再给一点切向偏移，防止再次吸附
+              const strafe2 = ((this as any)._motionScale || 1) * 0.3 // 从0.5降低到0.3
+              enemy.x += -nyy * strafe2
+              enemy.y += nxx * strafe2
+            }
           }
         }
         
@@ -1709,16 +2199,28 @@ export class TestGameEngine {
         // Boss特殊技能
         if (now - enemy.lastSkill >= enemy.skillCooldown) {
           if (bossEnemy.phase >= 2) {
-            // 召唤小怪 - 添加召唤特效
+            // 召唤小怪 - 添加明显的召唤特效
             this.effectsSystem.createParticleEffect('magic_burst', enemy.x, enemy.y, {
-              count: 30,
+              count: 70,
               spread: 360,
-              speed: { min: 1, max: 3 },
-              size: { min: 3, max: 6 },
-              life: { min: 400, max: 800 },
+              speed: { min: 2, max: 6 },
+              size: { min: 6, max: 12 },
+              life: { min: 600, max: 1200 },
+              colors: ['#FF6600', '#FF8800', '#FFAA00', '#FFFFFF'],
+              fadeOut: true
+            })
+            // 添加召唤阵圆环特效
+            this.effectsSystem.createParticleEffect('energy_discharge', enemy.x, enemy.y, {
+              count: 50,
+              spread: 360,
+              speed: { min: 1, max: 4 },
+              size: { min: 10, max: 20 },
+              life: { min: 800, max: 1500 },
               colors: ['#FF6600', '#FF8800', '#FFFFFF'],
               fadeOut: true
             })
+            // 添加屏幕震动效果
+            this.effectsSystem.addScreenEffect('shake', 0.3, 200, '#FF6600')
             this.summonMinions(enemy)
           }
           if (bossEnemy.phase >= 3) {
@@ -1748,23 +2250,70 @@ export class TestGameEngine {
         // Boss接触伤害更高
         this.handleContactDamage(enemy, this.currentLevel)
           break
-
       case 'infantry_captain':
         // 第5层Boss：重装指挥官
         const commander = enemy as any
         if (!commander.lastAttack) commander.lastAttack = now - 3000
-        if (!commander.attackCooldown) commander.attackCooldown = 2000
+        // 第5层时使用更长的攻击冷却（3000ms），其他层保持2000ms
+        if (!commander.attackCooldown) commander.attackCooldown = this.currentLevel === 5 ? 3000 : 2000
         if (!commander.lastSkill) commander.lastSkill = now
-        if (!commander.skillCooldown) commander.skillCooldown = 12000
+        // 第5层时使用更长的技能冷却（18000ms），其他层保持12000ms
+        if (!commander.skillCooldown) commander.skillCooldown = this.currentLevel === 5 ? 18000 : 12000
         
-        // 移动：缓慢接近（确保distance > 0）
-        const commanderMoveRangeSq = 150 * 150
-        if (distanceSq > commanderMoveRangeSq) {
+        // **修复**：Boss移动逻辑（保持距离，不贴脸）
+        if (distanceSq > 0) {
           const dist = getDistance()
           if (dist > 0) {
-            const speed = (enemy.speed || 0.8) * 0.8
-            enemy.x += (dx / dist) * speed
-            enemy.y += (dy / dist) * speed
+            // 大幅降低Boss基础速度
+            const base = Math.min(enemy.speed || 0.45, 0.35)
+            const speed = base * ((this as any)._motionScale || 1)
+            
+            // 目标维持距离（停靠距离），显著增大
+            const contactDist = 15 + (enemy.size || 24)
+            const stopDist = Math.max(contactDist + 120, 180)
+            const minDist = contactDist + 40
+            
+            const nx = dx / dist
+            const ny = dy / dist
+            
+            if (dist > stopDist + 15) {
+              // 距离过远：向玩家靠近，但速度较慢
+              const approachSpeed = speed * 0.7
+              enemy.x += nx * approachSpeed
+              enemy.y += ny * approachSpeed
+            } else if (dist < stopDist - 15) {
+              // 距离过近：后退到安全距离
+              const retreatSpeed = speed * 0.8
+              enemy.x -= nx * retreatSpeed
+              enemy.y -= ny * retreatSpeed
+            } else {
+              // 距离合适：大幅减速或停止，偶尔小幅侧移
+              if (Math.random() < 0.3) {
+                const strafe = speed * 0.3
+                enemy.x += -ny * strafe
+                enemy.y += nx * strafe
+              }
+              // 70%的时间保持静止
+            }
+            
+            // 强制最小分离，避免进入接触伤害半径
+            const actualDistX = enemy.x - this.playerX
+            const actualDistY = enemy.y - this.playerY
+            const actualDist = Math.hypot(actualDistX, actualDistY) || 1
+            if (actualDist < minDist) {
+              const nxx = actualDistX / actualDist
+              const nyy = actualDistY / actualDist
+              enemy.x = this.playerX + nxx * minDist
+              enemy.y = this.playerY + nyy * minDist
+              const strafe2 = ((this as any)._motionScale || 1) * 0.3
+              enemy.x += -nyy * strafe2
+              enemy.y += nxx * strafe2
+            }
+            
+            // **修复**：添加边界检查，防止Boss跑出屏幕
+            const margin = enemy.size || 24
+            enemy.x = Math.max(margin, Math.min(this.canvas.width - margin, enemy.x))
+            enemy.y = Math.max(margin, Math.min(this.canvas.height - margin, enemy.y))
           }
         }
         
@@ -1797,8 +2346,9 @@ export class TestGameEngine {
             } else {
               baseDamage = 3.6 + (this.currentLevel - 15) * 0.5 // 第16层之后正常增长
             }
-            // Boss远程伤害是普通远程的1.5倍
-            const bossDamage = baseDamage * 1.5
+            // Boss远程伤害：第5层时降低到1.0倍（从1.5倍降低），其他层保持1.5倍
+            const bossDamageMultiplier = this.currentLevel === 5 ? 1.0 : 1.5
+            const bossDamage = baseDamage * bossDamageMultiplier
             this.projectiles.push({
               x: enemy.x,
               y: enemy.y,
@@ -1816,20 +2366,83 @@ export class TestGameEngine {
           commander.lastAttack = now
         }
         
-        // 技能：步兵方阵（召唤）
-        if (now - commander.lastSkill >= (commander.skillCooldown || 12000)) {
-          // 技能特效：召唤阵
+        // 技能2：步兵方阵（召唤）- 第5层时降低强度
+        if (!commander.lastSummon) commander.lastSummon = now - (this.currentLevel === 5 ? 18000 : 12000)
+        const summonCooldown = this.currentLevel === 5 ? 18000 : 12000 // 第5层时增加冷却到18秒
+        const summonCount = this.currentLevel === 5 ? 2 : 4 // 第5层时只召唤2个（从4个降低）
+        if (now - commander.lastSummon >= summonCooldown) {
+          // 技能特效：明显的召唤阵特效
           this.effectsSystem.createParticleEffect('magic_burst', enemy.x, enemy.y, {
+            count: 80,
+            spread: 360,
+            speed: { min: 2, max: 6 },
+            size: { min: 6, max: 12 },
+            life: { min: 600, max: 1200 },
+            colors: ['#00B7FF', '#0088FF', '#44DDFF', '#FFFFFF'],
+            fadeOut: true
+          })
+          // 添加召唤阵圆环特效
+          this.effectsSystem.createParticleEffect('energy_discharge', enemy.x, enemy.y, {
             count: 50,
             spread: 360,
-            speed: { min: 1, max: 3 },
-            size: { min: 3, max: 6 },
-            life: { min: 500, max: 1000 },
+            speed: { min: 1, max: 4 },
+            size: { min: 10, max: 20 },
+            life: { min: 800, max: 1500 },
             colors: ['#00B7FF', '#0088FF', '#FFFFFF'],
             fadeOut: true
           })
-          this.summonMinions(enemy, 4)
-          commander.lastSkill = now
+          // 添加屏幕震动效果
+          this.effectsSystem.addScreenEffect('shake', 0.3, 200, '#00B7FF')
+          this.summonMinions(enemy, summonCount)
+          commander.lastSummon = now
+        }
+        
+        // 技能3：重装冲锋（新技能）- 第5层时延迟激活条件（从50%降到30%）
+        if (!commander.lastCharge) commander.lastCharge = now
+        const healthPercent = enemy.health / enemy.maxHealth
+        const chargeThreshold = this.currentLevel === 5 ? 0.3 : 0.5 // 第5层时30%才激活（从50%降低）
+        if (healthPercent < chargeThreshold && now - commander.lastCharge >= 15000) {
+          // 技能特效：冲锋准备
+          this.effectsSystem.createParticleEffect('energy_discharge', enemy.x, enemy.y, {
+            count: 60,
+            spread: 360,
+            speed: { min: 3, max: 8 },
+            size: { min: 8, max: 16 },
+            life: { min: 500, max: 1000 },
+            colors: ['#FF0000', '#FF6600', '#FF8800'],
+            fadeOut: true
+          })
+          
+          // 快速冲向玩家
+          const dist = getDistance()
+          if (dist > 0) {
+            // 时间尺度的冲锋，避免一帧内多次位移造成“吸附”
+            const chargeSpeedPxPerSec = 300
+            const dtSec = Math.max(0.016, Math.min(0.1, ((this as any)._motionScale || 1) * 0.01667))
+            enemy.x += (dx / dist) * chargeSpeedPxPerSec * dtSec
+            enemy.y += (dy / dist) * chargeSpeedPxPerSec * dtSec
+            
+            // 如果距离足够近，造成额外伤害
+            if (distanceSq < 100 * 100) {
+              const chargeDamage = 20 + this.currentLevel * 3
+              if (now >= this.playerIFrameUntil) {
+                this.playerHealth -= chargeDamage
+                this.playerIFrameUntil = now + 400
+                // 添加击中特效
+                this.effectsSystem.createParticleEffect('explosion_debris', this.playerX, this.playerY, {
+                  count: 30,
+                  spread: 360,
+                  speed: { min: 3, max: 8 },
+                  size: { min: 4, max: 10 },
+                  life: { min: 400, max: 800 },
+                  colors: ['#FF0000', '#FF6600'],
+                  fadeOut: true
+                })
+                this.effectsSystem.addScreenEffect('shake', 0.4, 300, '#FF0000')
+              }
+            }
+          }
+          commander.lastCharge = now
         }
         
         this.handleContactDamage(enemy, this.currentLevel)
@@ -1837,43 +2450,95 @@ export class TestGameEngine {
 
       case 'fortress_guard':
         // 第10层Boss：虫巢母体
+        // **性能优化**：只处理一次，避免重复计算
         const hiveMother = enemy as any
-        // 安全检查：确保enemy有效且未死亡
+        
+        // 快速退出检查：如果Boss已死亡，直接清理并退出
         if (!enemy || enemy.health <= 0) {
-          // 如果Boss已死亡，清理所有待孵化的虫卵，避免继续处理
-          if (hiveMother && hiveMother.pendingEggs && Array.isArray(hiveMother.pendingEggs)) {
-            hiveMother.pendingEggs = []
+          if (hiveMother) {
+            if (hiveMother.pendingEggs) hiveMother.pendingEggs = []
+            if (hiveMother.stormZones) hiveMother.stormZones = []
           }
           break
         }
         
-        // 初始化属性（只初始化一次）
-        if (!hiveMother.lastSkill) hiveMother.lastSkill = now
-        if (!hiveMother.skillCooldown) hiveMother.skillCooldown = 5000
-        if (!hiveMother.lastBoomHatch) hiveMother.lastBoomHatch = now - 8000
-        if (!hiveMother.pendingEggs) hiveMother.pendingEggs = []
+        // **关键修复**：Boss已经从批处理中排除，现在每5帧才会被调用一次
+        // 所以不需要额外的帧数限制，但保留基本检查以确保性能
         
-        // **关键修复**：严格限制 pendingEggs 数组大小，防止无限增长导致卡死
-        if (hiveMother.pendingEggs.length > 30) {
-          console.warn(`[fortress_guard] pendingEggs 数组过大 (${hiveMother.pendingEggs.length})，清理旧数据`)
-          // 只保留最近的15个
-          hiveMother.pendingEggs = hiveMother.pendingEggs.slice(-15)
-        }
-        
-        // **额外安全检查**：如果数组仍然异常大，强制清理
-        if (hiveMother.pendingEggs.length > 50) {
-          console.error(`[fortress_guard] 严重错误：pendingEggs 数组异常大 (${hiveMother.pendingEggs.length})，强制清空`)
+        // 初始化属性（只初始化一次，避免重复检查）
+        if (!hiveMother._initialized) {
+          hiveMother.lastSkill = now
+          hiveMother.skillCooldown = 5000
+          hiveMother.lastBoomHatch = now - 8000
+          hiveMother.lastSwarmStorm = now - 20000
           hiveMother.pendingEggs = []
+          hiveMother.stormZones = []
+          hiveMother._initialized = true
         }
         
-        // 移动：缓慢蠕动（确保distance > 0且有效）
-        const hiveMoveRangeSq = 200 * 200
-        if (distanceSq > hiveMoveRangeSq && isFinite(dx) && isFinite(dy)) {
+        // **关键修复**：每帧都检查并清理数组，防止累积导致卡死
+        // 这是第10层卡死的根本原因：数组无限增长导致内存和性能问题
+        // **更激进**：降低上限，更频繁地清理
+        if (hiveMother.pendingEggs && hiveMother.pendingEggs.length > 8) {
+          // **关键修复**：强制清理到8个（从10个降低到8个），更严格
+          hiveMother.pendingEggs = hiveMother.pendingEggs.slice(-8)
+          console.warn(`[fortress_guard] pendingEggs数组过大，强制清理到8个`)
+        }
+        if (hiveMother.stormZones && hiveMother.stormZones.length > 2) {
+          // **关键修复**：强制清理到2个（从3个降低到2个），更严格
+          hiveMother.stormZones = hiveMother.stormZones.slice(-2)
+          console.warn(`[fortress_guard] stormZones数组过大，强制清理到2个`)
+        }
+        
+        // **修复**：Boss移动逻辑（保持距离，不贴脸）
+        if (distanceSq > 0 && isFinite(dx) && isFinite(dy)) {
           const dist = getDistance()
           if (dist > 0 && isFinite(dist)) {
-            const speed = (enemy.speed || 0.3) * 0.3
-            enemy.x += (dx / dist) * speed
-            enemy.y += (dy / dist) * speed
+            // 大幅降低Boss基础速度
+            const base = Math.min(enemy.speed || 0.45, 0.35)
+            const speed = base * ((this as any)._motionScale || 1)
+            
+            // 目标维持距离（停靠距离），显著增大
+            const contactDist = 15 + (enemy.size || 24)
+            const stopDist = Math.max(contactDist + 120, 180)
+            const minDist = contactDist + 40
+            
+            const nx = dx / dist
+            const ny = dy / dist
+            
+            if (dist > stopDist + 15) {
+              // 距离过远：向玩家靠近，但速度较慢
+              const approachSpeed = speed * 0.7
+              enemy.x += nx * approachSpeed
+              enemy.y += ny * approachSpeed
+            } else if (dist < stopDist - 15) {
+              // 距离过近：后退到安全距离
+              const retreatSpeed = speed * 0.8
+              enemy.x -= nx * retreatSpeed
+              enemy.y -= ny * retreatSpeed
+            } else {
+              // 距离合适：大幅减速或停止，偶尔小幅侧移
+              if (Math.random() < 0.3) {
+                const strafe = speed * 0.3
+                enemy.x += -ny * strafe
+                enemy.y += nx * strafe
+              }
+              // 70%的时间保持静止
+            }
+            
+            // 强制最小分离，避免进入接触伤害半径
+            const actualDistX = enemy.x - this.playerX
+            const actualDistY = enemy.y - this.playerY
+            const actualDist = Math.hypot(actualDistX, actualDistY) || 1
+            if (actualDist < minDist) {
+              const nxx = actualDistX / actualDist
+              const nyy = actualDistY / actualDist
+              enemy.x = this.playerX + nxx * minDist
+              enemy.y = this.playerY + nyy * minDist
+              const strafe2 = ((this as any)._motionScale || 1) * 0.3
+              enemy.x += -nyy * strafe2
+              enemy.y += nxx * strafe2
+            }
           }
         }
         
@@ -1881,16 +2546,12 @@ export class TestGameEngine {
         // 确保时间差计算正确，避免立即触发
         const skillTimeDiff = now - hiveMother.lastSkill
         if (skillTimeDiff >= 5000 && skillTimeDiff < 100000) { // 添加上限防止异常大的时间差
-          // 技能特效：虫巢脉动（绿色能量爆发）
-          this.effectsSystem.createParticleEffect('magic_burst', enemy.x, enemy.y, {
-            count: 60,
-            spread: 360,
-            speed: { min: 1, max: 4 },
-            size: { min: 4, max: 10 },
-            life: { min: 400, max: 800 },
-            colors: ['#39FF14', '#00FF88', '#88FF44'],
-            fadeOut: true
-          })
+          // **关键修复**：完全禁用粒子效果，防止卡死
+          // 粒子效果是导致卡死的主要原因之一，完全禁用
+          // const totalEnemies = this.enemies.length + this.pendingEnemies.length
+          // if (totalEnemies < this.MAX_ENEMIES * 0.7) {
+          //   // 技能特效已禁用
+          // }
           
           // 在Boss周围3个位置生成快速虫
           for (let i = 0; i < 3; i++) {
@@ -1899,60 +2560,204 @@ export class TestGameEngine {
             const spawnY = enemy.y + Math.sin(angle) * 60
             const baseHealth = (20 * (1.0 + (this.currentLevel - 1) * 0.1)) * 0.15
             const baseSize = 18 + this.currentLevel * 0.5
-            const bug = this.createEnemyByType('bug', this.currentLevel, spawnX, spawnY, baseHealth, baseSize * 0.8)
-            if (bug) {
-              bug.speed = 2.5 // 更快的快速虫
-              // 限制pendingEnemies数量，防止无限增长
-              // 同时检查总敌人数量，防止超过上限
-              if (this.pendingEnemies.length < 50 && this.enemies.length + this.pendingEnemies.length < this.MAX_ENEMIES) {
-                this.pendingEnemies.push(bug) // 使用待添加队列，避免在循环中修改数组
+              const bug = this.createEnemyByType('bug', this.currentLevel, spawnX, spawnY, baseHealth, baseSize * 0.8)
+              if (bug) {
+                bug.speed = 2.5 // 更快的快速虫
+                // **关键修复**：更严格的限制，防止敌人数量过多导致卡死
+                // 限制pendingEnemies数量，防止无限增长
+                // 同时检查总敌人数量，防止超过上限
+                if (this.pendingEnemies.length < 30 && this.enemies.length + this.pendingEnemies.length < this.MAX_ENEMIES * 0.8) {
+                  this.pendingEnemies.push(bug) // 使用待添加队列，避免在循环中修改数组
+                } else {
+                  console.warn(`[fortress_guard] 敌人数量过多，跳过生成快速虫 (enemies: ${this.enemies.length}, pending: ${this.pendingEnemies.length})`)
+                }
               }
-            }
             // 每个生成点都有特效
             this.addHitEffect(spawnX, spawnY, false, '#39FF14')
           }
           hiveMother.lastSkill = now
         }
         
-        // 技能2：爆虫孵化（每10秒）
-        // 先检查并孵化待孵化的虫卵
-        if (hiveMother.pendingEggs && hiveMother.pendingEggs.length > 0) {
-          // 限制每次处理的虫卵数量，防止单帧处理过多导致卡顿
-          const maxEggsToProcess = 10
-          let processedCount = 0
+        // 技能2：虫群风暴（新技能）- 每20秒释放范围DoT
+        // **性能优化**：减少粒子效果数量
+        const stormTimeDiff = now - hiveMother.lastSwarmStorm
+        if (stormTimeDiff >= 20000 && stormTimeDiff < 100000) {
+          // 在玩家位置创建持续伤害区域
+          const stormRadius = 150
+          const stormDuration = 6000 // 6秒
           
-          // 从后往前遍历并删除，避免索引变化问题
-          for (let i = hiveMother.pendingEggs.length - 1; i >= 0 && processedCount < maxEggsToProcess; i--) {
+          // **关键修复**：完全禁用粒子效果，防止卡死
+          // 粒子效果已完全禁用
+          
+          // 创建持续伤害区域（标记在玩家当前位置）
+          if (!hiveMother.stormZones) hiveMother.stormZones = []
+          hiveMother.stormZones.push({
+            x: this.playerX,
+            y: this.playerY,
+            radius: stormRadius,
+            startTime: now,
+            duration: stormDuration,
+            damagePerTick: 2 + this.currentLevel * 0.5,
+            tickInterval: 500 // 每0.5秒造成一次伤害
+          })
+          
+          // 限制风暴区域数量（加强清理逻辑）
+          if (hiveMother.stormZones.length > 3) {
+            // 移除最旧的风暴区域
+            const oldestZone = hiveMother.stormZones.shift()
+            if (oldestZone && now - oldestZone.startTime > oldestZone.duration) {
+              // 如果最旧的风暴区域已经过期，直接删除
+              // 否则继续保留
+            }
+          }
+          
+          // 额外安全检查：如果stormZones数组异常大，强制清理
+          if (hiveMother.stormZones.length > 5) {
+            console.warn(`[fortress_guard] stormZones数组异常大 (${hiveMother.stormZones.length})，强制清理`)
+            // 只保留最近的3个
+            hiveMother.stormZones = hiveMother.stormZones.slice(-3)
+          }
+          
+          hiveMother.lastSwarmStorm = now
+        }
+        
+        // **关键修复**：处理风暴区域的伤害 - 添加更严格的限制和清理
+        // 这是潜在的卡死原因：stormZones数组可能累积或处理时间过长
+        if (hiveMother.stormZones?.length > 0) {
+          // **关键修复**：先清理所有过期区域，防止累积
+          for (let i = hiveMother.stormZones.length - 1; i >= 0; i--) {
+            const zone = hiveMother.stormZones[i]
+            if (!zone || !zone.startTime || !isFinite(zone.startTime)) {
+              hiveMother.stormZones.splice(i, 1)
+              continue
+            }
+            const elapsed = now - zone.startTime
+            if (elapsed >= zone.duration || elapsed < 0 || elapsed > 100000) {
+              hiveMother.stormZones.splice(i, 1)
+              continue
+            }
+          }
+          
+          // **关键修复**：强制限制数组大小，防止无限增长
+          if (hiveMother.stormZones.length > 2) {
+            // 只保留最近的2个（从3个降低到2个）
+            hiveMother.stormZones = hiveMother.stormZones.slice(-2)
+          }
+          
+          // **关键修复**：只处理最近的2个区域，限制处理数量
+          const maxZones = Math.min(hiveMother.stormZones.length, 2)
+          for (let i = hiveMother.stormZones.length - 1; i >= 0 && i >= hiveMother.stormZones.length - maxZones; i--) {
+            const zone = hiveMother.stormZones[i]
+            if (!zone) continue
+            
+            // 快速距离检查
+            const dx2 = this.playerX - zone.x
+            const dy2 = this.playerY - zone.y
+            const distSq2 = dx2 * dx2 + dy2 * dy2
+            if (distSq2 < zone.radius * zone.radius) {
+              if (!zone.lastTick) zone.lastTick = zone.startTime
+              if (now - zone.lastTick >= zone.tickInterval) {
+                if (now >= this.playerIFrameUntil) {
+                  this.playerHealth -= zone.damagePerTick
+                  this.playerIFrameUntil = now + 200
+                }
+                zone.lastTick = now
+              }
+            }
+          }
+        }
+        
+        // **关键修复**：技能3：爆虫孵化 - 处理虫卵孵化和清理
+        // **新增**：虫卵现在是可被攻击的敌人，需要检查是否被击杀或应该孵化
+        if (hiveMother.pendingEggs && hiveMother.pendingEggs.length > 0) {
+          // **关键修复**：先清理所有过期虫卵（超过孵化时间5秒的），防止无限累积
+          for (let i = hiveMother.pendingEggs.length - 1; i >= 0; i--) {
             const egg = hiveMother.pendingEggs[i]
             if (!egg) {
-              // 如果egg无效，直接删除
               hiveMother.pendingEggs.splice(i, 1)
               continue
             }
             
-            // 检查是否应该孵化（如果超过孵化时间太久，直接删除）
-            if (now >= egg.hatchTime) {
-              // 如果孵化时间超过5秒还没处理，可能是异常情况，直接删除
-              if (now - egg.hatchTime > 5000) {
+            // **新增**：检查虫卵是否已被击杀（通过enemyIndex查找）
+            if (egg.enemyIndex !== undefined) {
+              // **修复**：由于数组可能变化，需要重新查找虫卵敌人
+              let eggEnemy: any = null
+              let eggEnemyIndex = -1
+              
+              // 在敌人列表中查找对应的虫卵（通过位置和类型匹配）
+              for (let j = 0; j < this.enemies.length; j++) {
+                const e = this.enemies[j]
+                if (e && e.type === 'egg' && Math.abs(e.x - egg.x) < 5 && Math.abs(e.y - egg.y) < 5) {
+                  eggEnemy = e
+                  eggEnemyIndex = j
+                  break
+                }
+              }
+              
+              // 如果虫卵敌人不存在或已死亡，从pendingEggs中移除
+              if (!eggEnemy || eggEnemy.health <= 0 || eggEnemy.type !== 'egg') {
                 hiveMother.pendingEggs.splice(i, 1)
                 continue
               }
               
-              // 孵化自爆虫
-              const exploder = this.createEnemyByType('charger', this.currentLevel, egg.x, egg.y, 1, 12)
-              if (exploder) {
-                exploder.speed = 2.0 // 降低速度，避免立即冲向玩家
-                exploder.health = 1
-                // 限制pendingEnemies数量，防止无限增长
-                // 同时检查总敌人数量，防止超过上限
-                if (this.pendingEnemies.length < 30 && this.enemies.length + this.pendingEnemies.length < this.MAX_ENEMIES) {
-                  this.pendingEnemies.push(exploder) // 使用待添加队列
+              // **新增**：检查是否应该孵化（时间到了且虫卵还活着）
+              // **修复**：使用eggEnemy.hatchTime而不是egg.hatchTime（因为enemy对象中有hatchTime）
+              const hatchTime = eggEnemy.hatchTime || egg.hatchTime
+              if (hatchTime && now >= hatchTime && eggEnemy.health > 0) {
+                // **关键修复**：检查敌人数量，防止生成过多敌人导致卡死
+                const currentEnemyCount = this.enemies.length + this.pendingEnemies.length
+                if (currentEnemyCount >= this.MAX_ENEMIES * 0.75) {
+                  // 敌人数量过多，直接删除虫卵，不孵化
+                  // 从敌人列表中移除虫卵
+                  if (eggEnemy) {
+                    const eggIndex = this.enemies.indexOf(eggEnemy)
+                    if (eggIndex >= 0) {
+                      this.enemies.splice(eggIndex, 1)
+                    }
+                  }
+                  hiveMother.pendingEggs.splice(i, 1)
+                  continue
                 }
+                
+                // 孵化自爆虫
+                const exploder = this.createEnemyByType('charger', this.currentLevel, egg.x, egg.y, 1, 12)
+                if (exploder) {
+                  exploder.speed = 2.0
+                  exploder.health = 1
+                  if (this.pendingEnemies.length < 15 && currentEnemyCount < this.MAX_ENEMIES * 0.75) {
+                    this.pendingEnemies.push(exploder)
+                    
+                    // 孵化特效
+                    this.effectsSystem.createParticleEffect('magic_burst', egg.x, egg.y, {
+                      count: 30,
+                      spread: 360,
+                      speed: { min: 2, max: 6 },
+                      size: { min: 4, max: 8 },
+                      life: { min: 400, max: 800 },
+                      colors: ['#8B4513', '#A0522D', '#CD853F'],
+                      fadeOut: true
+                    })
+                  }
+                }
+                
+                // 从敌人列表中移除已孵化的虫卵
+                if (eggEnemyIndex >= 0) {
+                  this.enemies.splice(eggEnemyIndex, 1)
+                }
+                // 从pendingEggs中移除
+                hiveMother.pendingEggs.splice(i, 1)
               }
-              // 直接从后往前删除，避免索引变化
+            } else if (egg.hatchTime && now - egg.hatchTime > 5000) {
+              // 旧格式的虫卵（没有enemyIndex），直接删除过期太久的
               hiveMother.pendingEggs.splice(i, 1)
-              processedCount++
             }
+          }
+          
+          // **关键修复**：如果数组还是太大，强制清理最旧的（更严格）
+          if (hiveMother.pendingEggs.length > 8) {
+            // 只保留最近的8个虫卵（从10个降低到8个）
+            hiveMother.pendingEggs = hiveMother.pendingEggs.slice(-8)
+            console.warn(`[fortress_guard] pendingEggs数组过大，强制清理到8个`)
           }
         }
         
@@ -1963,29 +2768,72 @@ export class TestGameEngine {
         const shouldSpawnEggs = hiveEnemyCount < this.MAX_ENEMIES * 0.8 // 敌人数量少于80%上限时才生成虫卵
         
         if (boomTimeDiff >= 10000 && boomTimeDiff < 100000 && shouldSpawnEggs) {
-          // 技能特效：爆虫预警（红色危险警告）- 减少粒子数量提升性能
-          this.effectsSystem.createParticleEffect('fire_burst', this.playerX, this.playerY, {
-            count: 15, // 进一步减少粒子数量
-            spread: 360,
-            speed: { min: 0.5, max: 2 },
-            size: { min: 6, max: 12 },
-            life: { min: 500, max: 1500 },
-            colors: ['#FF0000', '#FF4400', '#FF8800'],
-            fadeOut: true
-          })
+          // **关键修复**：完全禁用粒子效果，防止卡死
+          // 粒子效果已完全禁用
           
-          // 在玩家位置生成虫卵（2秒后孵化）
-          // 根据敌人数量动态调整虫卵数量
-          const eggCount = hiveEnemyCount < 50 ? 3 : 2 // 敌人少时生成3个，敌人多时只生成2个
-          for (let i = 0; i < eggCount && hiveMother.pendingEggs.length < 20; i++) {
-            const offsetAngle = (i - eggCount/2 + 0.5) * 0.3
-            const eggX = this.playerX + Math.cos(offsetAngle) * 30
-            const eggY = this.playerY + Math.sin(offsetAngle) * 30
-            hiveMother.pendingEggs.push({
+          // 在玩家位置生成虫卵（5秒后孵化，可被击杀）
+          // **关键修复**：更严格的限制，防止pendingEggs数组累积导致卡死
+          // 这是第10层卡死的核心问题：虫卵生成速度超过处理速度
+          const maxEggs = 8 // 从10进一步减少到8，更严格防止累积
+          // **关键修复**：如果数组已经很大，不再生成新虫卵
+          if (hiveMother.pendingEggs.length >= maxEggs) {
+            // 数组已满，不生成新虫卵
+            hiveMother.lastBoomHatch = now // 更新冷却时间，但跳过生成
+            break // 直接退出switch case
+          }
+          const eggCount = hiveEnemyCount < 30 ? 3 : 2 // 敌人少时生成3个，敌人多时生成2个
+          const actualEggCount = Math.min(eggCount, maxEggs - hiveMother.pendingEggs.length)
+          
+          // **关键修复**：确保不会超过限制
+          if (actualEggCount <= 0) {
+            hiveMother.lastBoomHatch = now
+            break // 不生成虫卵，直接退出
+          }
+          
+          for (let i = 0; i < actualEggCount; i++) {
+            // 增加分散度：使用更大的角度和距离，避免重叠
+            const baseAngle = (i / Math.max(actualEggCount, 1)) * Math.PI * 2  // 均匀分布（修复：使用actualEggCount）
+            const angleVariation = (Math.random() - 0.5) * 0.5  // 随机角度变化
+            const offsetAngle = baseAngle + angleVariation
+            const baseDistance = 50 + Math.random() * 30  // 距离50-80像素
+            const eggX = this.playerX + Math.cos(offsetAngle) * baseDistance
+            const eggY = this.playerY + Math.sin(offsetAngle) * baseDistance
+            
+            // **新增**：创建虫卵作为可被攻击的敌人对象
+            const eggHealth = 5 + this.currentLevel * 0.5 // 虫卵血量：基础5点，每层+0.5
+            const eggSize = 15 + this.currentLevel * 0.3
+            const eggHatchTime = now + 5000 // 5秒后孵化
+            
+            const eggEnemy = {
               x: eggX,
               y: eggY,
-              hatchTime: now + 2000
-            })
+              size: eggSize,
+              color: '#8B4513', // 棕色虫卵
+              health: eggHealth,
+              maxHealth: eggHealth,
+              type: 'egg', // 虫卵类型
+              isElite: false,
+              speed: 0, // 虫卵不移动
+              hatchTime: eggHatchTime, // 孵化时间
+              isEgg: true, // 标记为虫卵
+              icdUntil: 0,
+              lastAttack: 0,
+              attackCooldown: 0
+            }
+            
+            // 将虫卵添加到敌人列表（作为可被攻击的敌人）
+            if (this.enemies.length < this.MAX_ENEMIES) {
+              const eggIndex = this.enemies.length
+              this.enemies.push(eggEnemy)
+              // 同时添加到pendingEggs用于孵化逻辑
+              if (!hiveMother.pendingEggs) hiveMother.pendingEggs = []
+              hiveMother.pendingEggs.push({
+                x: eggX,
+                y: eggY,
+                hatchTime: eggHatchTime,
+                enemyIndex: eggIndex // 保存敌人索引（在push之前获取）
+              })
+            }
           }
           hiveMother.lastBoomHatch = now
         }
@@ -2008,14 +2856,56 @@ export class TestGameEngine {
         const assassinCycleTime = (now - assassin.invisibleTimer) % assassinInvisibleCycle
         assassin.isInvisible = assassinCycleTime < 8000 // 前8秒隐身，后2秒现身
         
-        // 隐身时移动更快（确保distance > 0）
+        // 隐身时移动逻辑（保持距离，不贴脸）
         if (distanceSq > 0) {
           const dist = getDistance()
           if (dist > 0) {
-            const speedMultiplier = assassin.isInvisible ? 1.5 : 1.0
-            const speed = (enemy.speed || 0.5) * speedMultiplier
-            enemy.x += (dx / dist) * speed
-            enemy.y += (dy / dist) * speed
+            // 大幅降低Boss基础速度，隐身时稍快但也不太快
+            const base = Math.min(enemy.speed || 0.45, 0.35)
+            const speedMultiplier = assassin.isInvisible ? 1.2 : 1.0 // 隐身时只快20%
+            const speed = base * speedMultiplier * ((this as any)._motionScale || 1)
+            
+            // 目标维持距离（停靠距离），显著增大
+            const contactDist = 15 + (enemy.size || 24)
+            const stopDist = Math.max(contactDist + 120, 180)
+            const minDist = contactDist + 40
+            
+            const nx = dx / dist
+            const ny = dy / dist
+            
+            if (dist > stopDist + 15) {
+              // 距离过远：向玩家靠近，但速度较慢
+              const approachSpeed = speed * 0.7
+              enemy.x += nx * approachSpeed
+              enemy.y += ny * approachSpeed
+            } else if (dist < stopDist - 15) {
+              // 距离过近：后退到安全距离
+              const retreatSpeed = speed * 0.8
+              enemy.x -= nx * retreatSpeed
+              enemy.y -= ny * retreatSpeed
+            } else {
+              // 距离合适：大幅减速或停止，偶尔小幅侧移
+              if (Math.random() < 0.3) {
+                const strafe = speed * 0.3
+                enemy.x += -ny * strafe
+                enemy.y += nx * strafe
+              }
+              // 70%的时间保持静止
+            }
+            
+            // 强制最小分离，避免进入接触伤害半径
+            const actualDistX = enemy.x - this.playerX
+            const actualDistY = enemy.y - this.playerY
+            const actualDist = Math.hypot(actualDistX, actualDistY) || 1
+            if (actualDist < minDist) {
+              const nxx = actualDistX / actualDist
+              const nyy = actualDistY / actualDist
+              enemy.x = this.playerX + nxx * minDist
+              enemy.y = this.playerY + nyy * minDist
+              const strafe2 = ((this as any)._motionScale || 1) * 0.3
+              enemy.x += -nyy * strafe2
+              enemy.y += nxx * strafe2
+            }
           }
         }
         
@@ -2087,7 +2977,6 @@ export class TestGameEngine {
           this.handleContactDamage(enemy, this.currentLevel)
         }
         break
-
       case 'legion_commander':
         // 第20层Boss：混沌造物（三阶段）
         const chaos = enemy as any
@@ -2108,85 +2997,345 @@ export class TestGameEngine {
         
         // 阶段1：混沌巨兽（近战）
         if (chaos.phase === 1) {
+          // **修复**：Boss移动逻辑（保持距离，不贴脸）
           if (distanceSq > 0) {
             const dist = getDistance()
             if (dist > 0) {
-              const speed = (enemy.speed || 0.6) * 0.6
-            enemy.x += (dx / dist) * speed
-            enemy.y += (dy / dist) * speed
+              // 大幅降低Boss基础速度
+              const base = Math.min(enemy.speed || 0.45, 0.35)
+              const speed = base * ((this as any)._motionScale || 1)
+              
+              // 目标维持距离（停靠距离），显著增大
+              const contactDist = 15 + (enemy.size || 24)
+              const stopDist = Math.max(contactDist + 120, 180)
+              const minDist = contactDist + 40
+              
+              const nx = dx / dist
+              const ny = dy / dist
+              
+              if (dist > stopDist + 15) {
+                // 距离过远：向玩家靠近，但速度较慢
+                const approachSpeed = speed * 0.7
+                enemy.x += nx * approachSpeed
+                enemy.y += ny * approachSpeed
+              } else if (dist < stopDist - 15) {
+                // 距离过近：后退到安全距离
+                const retreatSpeed = speed * 0.8
+                enemy.x -= nx * retreatSpeed
+                enemy.y -= ny * retreatSpeed
+              } else {
+                // 距离合适：大幅减速或停止，偶尔小幅侧移
+                if (Math.random() < 0.3) {
+                  const strafe = speed * 0.3
+                  enemy.x += -ny * strafe
+                  enemy.y += nx * strafe
+                }
+                // 70%的时间保持静止
+              }
+              
+              // 强制最小分离，避免进入接触伤害半径
+              const actualDistX = enemy.x - this.playerX
+              const actualDistY = enemy.y - this.playerY
+              const actualDist = Math.hypot(actualDistX, actualDistY) || 1
+              if (actualDist < minDist) {
+                const nxx = actualDistX / actualDist
+                const nyy = actualDistY / actualDist
+                enemy.x = this.playerX + nxx * minDist
+                enemy.y = this.playerY + nyy * minDist
+                const strafe2 = ((this as any)._motionScale || 1) * 0.3
+                enemy.x += -nyy * strafe2
+                enemy.y += nxx * strafe2
+              }
             }
           }
-          // 技能：混沌重击（扇形范围）
-          if (now - chaos.lastSkill >= 9000) {
-            // 技能特效：混沌能量聚集（橙红色能量波动）
-            this.effectsSystem.createParticleEffect('fire_burst', enemy.x, enemy.y, {
-              count: 50, // **性能优化**：减少粒子数量
-              spread: 60, // 扇形60度（使用度数）
-              speed: { min: 3, max: 8 },
-              size: { min: 5, max: 12 },
-              life: { min: 500, max: 1000 },
+          // 阶段1：更独特的攻击方式 - 混沌震荡波 + 追踪弹
+          // 技能1：混沌震荡波（圆形冲击波）
+          if (!chaos.lastShockwave) chaos.lastShockwave = now - 4000
+          if (now - chaos.lastShockwave >= 4000) { // 4秒一次
+            // 创建3个圆形冲击波，从Boss位置向外扩散
+            if (!chaos.shockwaves) chaos.shockwaves = []
+            chaos.shockwaves.push({
+              x: enemy.x,
+              y: enemy.y,
+              radius: 20,
+              maxRadius: 200,
+              speed: 3,
+              damage: 15 + this.currentLevel * 2, // 降低伤害：从30+level*5改为15+level*2
+              startTime: now
+            })
+            
+            // 震荡波特效
+            this.effectsSystem.createParticleEffect('energy_discharge', enemy.x, enemy.y, {
+              count: 60,
+              spread: 360,
+              speed: { min: 1, max: 4 },
+              size: { min: 8, max: 16 },
+              life: { min: 600, max: 1200 },
               colors: ['#FF4500', '#FF8800', '#FFAA00'],
               fadeOut: true
             })
-            const hitAngle = Math.atan2(dy, dx)
-            // 扇形范围攻击（使用平方距离优化）
-            const hitRangeSq = 150 * 150
-            if (distanceSq < hitRangeSq) {
-              const damage = 40 + this.currentLevel * 8 // 增加伤害
-              if (now >= this.playerIFrameUntil) {
-                this.playerHealth -= damage
-                this.playerIFrameUntil = now + 500
-                this.effectsSystem.addScreenEffect('shake', 0.5, 400, '#FF4500')
+            this.effectsSystem.addScreenEffect('shake', 0.4, 300, '#FF4500')
+            
+            chaos.lastShockwave = now
+          }
+          
+          // 处理震荡波
+          if (chaos.shockwaves && chaos.shockwaves.length > 0) {
+            for (let i = chaos.shockwaves.length - 1; i >= 0; i--) {
+              const wave = chaos.shockwaves[i]
+              if (!wave) {
+                chaos.shockwaves.splice(i, 1)
+                continue
+              }
+              
+              wave.radius += wave.speed
+              
+              // 检查是否击中玩家
+              const dx = this.playerX - wave.x
+              const dy = this.playerY - wave.y
+              const distSq = dx * dx + dy * dy
+              const hitRadiusSq = (wave.radius + 15) * (wave.radius + 15)
+              const missRadiusSq = (wave.radius - 15) * (wave.radius - 15)
+              
+              if (distSq < hitRadiusSq && distSq > missRadiusSq && !wave.hasHit) {
+                // 玩家在冲击波边缘，造成伤害
+                if (now >= this.playerIFrameUntil) {
+                  this.playerHealth -= wave.damage
+                  this.playerIFrameUntil = now + 400
+                  wave.hasHit = true
+                  
+                  // 击中特效
+                  this.effectsSystem.createParticleEffect('explosion_debris', this.playerX, this.playerY, {
+                    count: 20,
+                    spread: 360,
+                    speed: { min: 3, max: 8 },
+                    size: { min: 4, max: 10 },
+                    life: { min: 400, max: 800 },
+                    colors: ['#FF4500', '#FF8800'],
+                    fadeOut: true
+                  })
+                }
+              }
+              
+              // 移除过期的冲击波
+              if (wave.radius >= wave.maxRadius) {
+                chaos.shockwaves.splice(i, 1)
               }
             }
+            // 限制冲击波数量
+            if (chaos.shockwaves.length > 3) {
+              chaos.shockwaves = chaos.shockwaves.slice(-3)
+            }
+          }
+          
+          // 技能2：追踪弹（每3秒发射）
+          if (now - chaos.lastSkill >= 3000) { // 3秒一次
+            // 技能特效：明显的混沌能量聚集（橙红色能量波动）
+            this.effectsSystem.createParticleEffect('fire_burst', enemy.x, enemy.y, {
+              count: 80,
+              spread: 60, // 扇形60度（使用度数）
+              speed: { min: 4, max: 10 },
+              size: { min: 8, max: 16 },
+              life: { min: 600, max: 1200 },
+              colors: ['#FF4500', '#FF8800', '#FFAA00', '#FFFF00'],
+              fadeOut: true
+            })
+            // 添加充能特效
+            this.effectsSystem.createParticleEffect('energy_discharge', enemy.x, enemy.y, {
+              count: 40,
+              spread: 60,
+              speed: { min: 2, max: 6 },
+              size: { min: 12, max: 24 },
+              life: { min: 800, max: 1500 },
+              colors: ['#FF4500', '#FF8800'],
+              fadeOut: true
+            })
+            // 扇形范围攻击（60度扇形，150像素范围）
+            const hitRangeSq = 150 * 150
+            if (distanceSq < hitRangeSq) {
+              // Boss面向玩家的角度
+              const bossFacingAngle = Math.atan2(dy, dx)
+              // 玩家相对于Boss的角度
+              const playerAngle = Math.atan2(this.playerY - enemy.y, this.playerX - enemy.x)
+              // 计算角度差（归一化到-π到π）
+              let angleDiff = playerAngle - bossFacingAngle
+              // 归一化角度差到-π到π范围
+              while (angleDiff > Math.PI) angleDiff -= Math.PI * 2
+              while (angleDiff < -Math.PI) angleDiff += Math.PI * 2
+              const absAngleDiff = Math.abs(angleDiff)
+              const halfSectorAngle = (60 * Math.PI / 180) / 2 // 30度
+              
+              // 如果玩家在Boss前方的60度扇形内，造成伤害
+              if (absAngleDiff <= halfSectorAngle) {
+                const damage = 20 + this.currentLevel * 3 // 降低伤害：从40+level*8改为20+level*3
+                if (now >= this.playerIFrameUntil) {
+                  this.playerHealth -= damage
+                  this.playerIFrameUntil = now + 500
+                  this.effectsSystem.addScreenEffect('shake', 0.6, 500, '#FF4500')
+                  // 添加击中特效
+                  this.effectsSystem.createParticleEffect('explosion_debris', this.playerX, this.playerY, {
+                    count: 30,
+                    spread: 360,
+                    speed: { min: 3, max: 8 },
+                    size: { min: 4, max: 10 },
+                    life: { min: 400, max: 800 },
+                    colors: ['#FF4500', '#FF8800'],
+                    fadeOut: true
+                  })
+                }
+              }
+            }
+            // 发射3发追踪弹
+            for (let i = 0; i < 3; i++) {
+              const angle = Math.atan2(dy, dx) + (i - 1) * 0.3
+              const bulletSpeed = 6
+              const homingProjectile: any = {
+                x: enemy.x,
+                y: enemy.y,
+                vx: Math.cos(angle) * bulletSpeed,
+                vy: Math.sin(angle) * bulletSpeed,
+                damage: 10 + this.currentLevel * 1.5, // 降低伤害：从20+level*3改为10+level*1.5
+                isCrit: false,
+                life: 800,
+                pierce: 0,
+                maxPierce: 0,
+                owner: 'enemy',
+                isGrenade: false,
+                isHoming: true, // 标记为追踪弹
+                targetX: this.playerX,
+                targetY: this.playerY
+              }
+              this.projectiles.push(homingProjectile)
+            }
+            
             chaos.lastSkill = now
           }
         }
         // 阶段2：混沌织法者（远程）
         else if (chaos.phase === 2) {
-          // 保持距离（使用平方距离优化）
-          const keepRangeSq = 200 * 200
-          if (distanceSq < keepRangeSq) {
+          // **修复**：Boss持续移动，保持适当距离但会接近玩家
+          if (distanceSq > 0) {
             const dist = getDistance()
             if (dist > 0) {
-              enemy.x -= (dx / dist) * 0.5
-              enemy.y -= (dy / dist) * 0.5
+              // 保持距离，但会持续移动（提高速度）
+              const keepRange = 200
+              const baseSpeed = enemy.speed || 3.5 // 进一步提高基础速度（从1.3提高到3.5）
+              if (dist < keepRange) {
+                // 距离太近，后退
+                enemy.x -= (dx / dist) * baseSpeed * 1.3
+                enemy.y -= (dy / dist) * baseSpeed * 1.3
+              } else if (dist > keepRange * 1.5) {
+                // 距离太远，接近
+                enemy.x += (dx / dist) * baseSpeed * 1.2
+                enemy.y += (dy / dist) * baseSpeed * 1.2
+              }
             }
           }
-          // 元素洪流：交替发射冰火雷
-          if (now - chaos.lastSkill >= 12000) {
-            // 技能特效：元素能量爆发（彩虹色粒子）
+          // 阶段2：更独特的攻击方式 - 混沌领域 + 元素弹幕
+          // 技能1：混沌领域（持续伤害区域）
+          if (!chaos.lastChaosZone) chaos.lastChaosZone = now - 8000
+          if (now - chaos.lastChaosZone >= 8000) {
+            // 在玩家周围创建4个持续伤害区域
+            for (let i = 0; i < 4; i++) {
+              const angle = (i / 4) * Math.PI * 2
+              const radius = 120
+              const zoneX = this.playerX + Math.cos(angle) * radius
+              const zoneY = this.playerY + Math.sin(angle) * radius
+              
+              if (!chaos.chaosZones) chaos.chaosZones = []
+              chaos.chaosZones.push({
+                x: zoneX,
+                y: zoneY,
+                radius: 60,
+                startTime: now,
+                duration: 5000, // 持续5秒
+                damagePerTick: 1 + this.currentLevel * 0.3, // 降低伤害：从2+level*0.5改为1+level*0.3
+                tickInterval: 500,
+                lastTick: now
+              })
+              
+              // 领域生成特效
+              this.effectsSystem.createParticleEffect('magic_burst', zoneX, zoneY, {
+                count: 40,
+                spread: 360,
+                speed: { min: 2, max: 6 },
+                size: { min: 6, max: 12 },
+                life: { min: 500, max: 1000 },
+                colors: ['#8800FF', '#FF00FF', '#FFFFFF'],
+                fadeOut: true
+              })
+            }
+            chaos.lastChaosZone = now
+          }
+          
+          // 处理混沌领域的伤害
+          if (chaos.chaosZones && chaos.chaosZones.length > 0) {
+            for (let i = chaos.chaosZones.length - 1; i >= 0; i--) {
+              const zone = chaos.chaosZones[i]
+              if (!zone || now - zone.startTime > zone.duration) {
+                chaos.chaosZones.splice(i, 1)
+                continue
+              }
+              
+              const dx = this.playerX - zone.x
+              const dy = this.playerY - zone.y
+              const distSq = dx * dx + dy * dy
+              if (distSq < zone.radius * zone.radius) {
+                if (now - zone.lastTick >= zone.tickInterval) {
+                  if (now >= this.playerIFrameUntil) {
+                    this.playerHealth -= zone.damagePerTick
+                    this.playerIFrameUntil = now + 200
+                  }
+                  zone.lastTick = now
+                }
+              }
+            }
+            // 限制领域数量
+            if (chaos.chaosZones.length > 4) {
+              chaos.chaosZones = chaos.chaosZones.slice(-4)
+            }
+          }
+          
+          // 技能2：元素弹幕（快速连续发射）
+          if (now - chaos.lastSkill >= 3000) { // 3秒一次，更频繁
             const elementColors = [
-              ['#00AAFF', '#88CCFF', '#FFFFFF'], // 冰
-              ['#FF4400', '#FF8800', '#FFAA00'], // 火
-              ['#AA00FF', '#FF00FF', '#FFFFFF']  // 雷
+              ['#00AAFF', '#88CCFF', '#AAEEFF', '#FFFFFF'], // 冰
+              ['#FF4400', '#FF8800', '#FFAA00', '#FFFF00'], // 火
+              ['#AA00FF', '#FF00FF', '#FF88FF', '#FFFFFF']  // 雷
             ]
-            const elementIndex = Math.floor((now / 4000) % 3)
-            this.effectsSystem.createParticleEffect('magic_burst', enemy.x, enemy.y, {
-              count: 80,
-              spread: 40, // 扇形40度（使用度数）
-              speed: { min: 4, max: 8 },
+            const elementIndex = Math.floor((now / 2000) % 3) // 每2秒切换元素
+            
+            const angle = Math.atan2(dy, dx)
+            const bulletSpeed = 8
+            // 发射5发投射物，更密集
+            for (let i = 0; i < 5; i++) {
+              const spreadAngle = angle + (i - 2) * 0.15  // 更宽的扇形
+              this.projectiles.push({
+                x: enemy.x,
+                y: enemy.y,
+                vx: Math.cos(spreadAngle) * bulletSpeed,
+                vy: Math.sin(spreadAngle) * bulletSpeed,
+                damage: 12 + this.currentLevel * 2, // 降低伤害：从25+level*4改为12+level*2
+                isCrit: false,
+                life: 600,
+                pierce: 0,
+                maxPierce: 1,
+                owner: 'enemy',
+                isGrenade: false
+              })
+            }
+            
+            // 弹幕特效
+            this.effectsSystem.createParticleEffect('energy_discharge', enemy.x, enemy.y, {
+              count: 30,
+              spread: 40,
+              speed: { min: 3, max: 8 },
               size: { min: 4, max: 10 },
-              life: { min: 500, max: 1000 },
+              life: { min: 400, max: 800 },
               colors: elementColors[elementIndex],
               fadeOut: true
             })
             
-            const angle = Math.atan2(dy, dx)
-            const bulletSpeed = 9
-            this.projectiles.push({
-              x: enemy.x,
-              y: enemy.y,
-              vx: Math.cos(angle) * bulletSpeed,
-              vy: Math.sin(angle) * bulletSpeed,
-              damage: 35 + this.currentLevel * 6, // 增加伤害
-              isCrit: false,
-              life: 500,
-              pierce: 0,
-              maxPierce: 2,
-              owner: 'enemy',
-              isGrenade: false
-            })
             chaos.lastSkill = now
           }
         }
@@ -2200,43 +3349,341 @@ export class TestGameEngine {
               enemy.y += (dy / dist) * speed
             }
           }
-          // 混沌突袭：高速冲刺留下伤害轨迹
-          if (now - chaos.lastSkill >= 8000) {
-            // 技能特效：混沌冲刺轨迹（彩虹尾迹）
-            const startX = enemy.x
-            const startY = enemy.y
-            this.effectsSystem.createParticleEffect('magic_burst', startX, startY, {
-              count: 120,
-              spread: 360,
-              speed: { min: 5, max: 12 },
-              size: { min: 3, max: 8 },
-              life: { min: 300, max: 800 },
-              colors: ['#FF0000', '#FF8800', '#FFFF00', '#00FF00', '#00AAFF', '#8800FF', '#FF00FF'],
-              fadeOut: true
-            })
-            
-            // 冲刺到玩家位置
-            enemy.x = this.playerX
-            enemy.y = this.playerY
-            
-            // 终点特效
-            this.effectsSystem.createParticleEffect('explosion_debris', this.playerX, this.playerY, {
-              count: 60,
-              spread: 360,
-              speed: { min: 2, max: 6 },
-              size: { min: 4, max: 10 },
-              life: { min: 400, max: 900 },
-              colors: ['#FFFFFF', '#FF00FF', '#AA00FF'],
-              fadeOut: true
-            })
-            this.effectsSystem.addScreenEffect('shake', 0.6, 500, '#FF00FF')
-            
-            const dashDamage = 35 + this.currentLevel * 6 // 增加伤害
-            if (now >= this.playerIFrameUntil) {
-              this.playerHealth -= dashDamage
-              this.playerIFrameUntil = now + 300
+          // 阶段3：更独特的攻击方式 - 混沌风暴 + 多重冲刺
+          // 技能1：混沌风暴（持续旋转的伤害区域）
+          if (!chaos.lastStorm) chaos.lastStorm = now - 6000
+          if (now - chaos.lastStorm >= 6000) { // 6秒一次
+            // 在Boss周围创建旋转的伤害区域
+            if (!chaos.stormZones) chaos.stormZones = []
+            for (let i = 0; i < 3; i++) {
+              const angle = (i / 3) * Math.PI * 2 + (now / 1000) * 0.5 // 旋转
+              const radius = 100
+              chaos.stormZones.push({
+                x: enemy.x + Math.cos(angle) * radius,
+                y: enemy.y + Math.sin(angle) * radius,
+                radius: 50,
+                startTime: now,
+                duration: 4000,
+                damagePerTick: 1.5 + this.currentLevel * 0.3, // 降低伤害：从3+level*0.5改为1.5+level*0.3
+                tickInterval: 300,
+                lastTick: now,
+                rotationSpeed: 0.02,
+                baseAngle: angle
+              })
             }
+            
+            // 风暴特效
+            this.effectsSystem.createParticleEffect('magic_burst', enemy.x, enemy.y, {
+              count: 80,
+              spread: 360,
+              speed: { min: 2, max: 8 },
+              size: { min: 5, max: 12 },
+              life: { min: 500, max: 1000 },
+              colors: ['#FF0000', '#FF00FF', '#8800FF', '#FFFFFF'],
+              fadeOut: true
+            })
+            
+            chaos.lastStorm = now
+          }
+          
+          // 处理风暴区域（旋转移动）
+          if (chaos.stormZones && chaos.stormZones.length > 0) {
+            for (let i = chaos.stormZones.length - 1; i >= 0; i--) {
+              const zone = chaos.stormZones[i]
+              if (!zone || now - zone.startTime > zone.duration) {
+                chaos.stormZones.splice(i, 1)
+                continue
+              }
+              
+              // 旋转移动
+              const elapsed = (now - zone.startTime) / 1000
+              const currentAngle = zone.baseAngle + elapsed * zone.rotationSpeed * 10
+              const radius = 100
+              zone.x = enemy.x + Math.cos(currentAngle) * radius
+              zone.y = enemy.y + Math.sin(currentAngle) * radius
+              
+              // 检查玩家是否在区域内
+              const dx = this.playerX - zone.x
+              const dy = this.playerY - zone.y
+              const distSq = dx * dx + dy * dy
+              if (distSq < zone.radius * zone.radius) {
+                if (now - zone.lastTick >= zone.tickInterval) {
+                  if (now >= this.playerIFrameUntil) {
+                    this.playerHealth -= zone.damagePerTick
+                    this.playerIFrameUntil = now + 200
+                  }
+                  zone.lastTick = now
+                }
+              }
+            }
+            // 限制风暴数量
+            if (chaos.stormZones.length > 3) {
+              chaos.stormZones = chaos.stormZones.slice(-3)
+            }
+          }
+          
+          // 技能2：多重冲刺（连续3次冲刺，每次间隔0.5秒）
+          if (!chaos.dashCount) chaos.dashCount = 0
+          if (!chaos.dashStartTime) chaos.dashStartTime = 0
+          
+          // 开始新的冲刺序列
+          if (chaos.dashCount === 0 && now - chaos.lastSkill >= 5000) {
+            chaos.dashCount = 3
+            chaos.dashStartTime = now
             chaos.lastSkill = now
+          }
+          
+          // 执行冲刺序列（每0.5秒一次）
+          if (chaos.dashCount > 0) {
+            const dashIndex = 3 - chaos.dashCount // 当前是第几次冲刺（0, 1, 2）
+            const timeSinceStart = now - chaos.dashStartTime
+            const dashInterval = 500 // 每次冲刺间隔500ms
+            
+            // 检查是否到了执行这次冲刺的时间
+            if (timeSinceStart >= dashIndex * dashInterval && timeSinceStart < dashIndex * dashInterval + 100) {
+              const dashStartX = enemy.x
+              const dashStartY = enemy.y
+              
+              // 预测玩家位置（基于移动方向）
+              const predictX = this.playerX + (this.playerX - this.playerLastX) * 2
+              const predictY = this.playerY + (this.playerY - this.playerLastY) * 2
+              
+              enemy.x = predictX
+              enemy.y = predictY
+              
+              // 冲刺特效
+              this.effectsSystem.createParticleEffect('magic_burst', enemy.x, enemy.y, {
+                count: 50,
+                spread: 360,
+                speed: { min: 4, max: 10 },
+                size: { min: 5, max: 12 },
+                life: { min: 300, max: 600 },
+                colors: ['#FF0000', '#FF00FF', '#FFFFFF'],
+                fadeOut: true
+              })
+              
+              // 检查玩家是否在冲刺路径上
+              const dashRangeSq = 100 * 100
+              const dashDistSq = (this.playerX - dashStartX) ** 2 + (this.playerY - dashStartY) ** 2
+              if (dashDistSq < dashRangeSq || distanceSq < dashRangeSq) {
+                const dashDamage = 25 + this.currentLevel * 4
+                if (now >= this.playerIFrameUntil) {
+                  this.playerHealth -= dashDamage
+                  this.playerIFrameUntil = now + 200
+                  
+                  // 击中特效
+                  this.effectsSystem.createParticleEffect('magic_burst', this.playerX, this.playerY, {
+                    count: 30,
+                    spread: 360,
+                    speed: { min: 4, max: 10 },
+                    size: { min: 5, max: 12 },
+                    life: { min: 400, max: 800 },
+                    colors: ['#FF00FF', '#FF88FF', '#FFFFFF'],
+                    fadeOut: true
+                  })
+                }
+              }
+              
+              // 标记这次冲刺已执行
+              if (!chaos.dashExecuted) chaos.dashExecuted = []
+              if (!chaos.dashExecuted[dashIndex]) {
+                chaos.dashExecuted[dashIndex] = true
+                chaos.dashCount--
+                
+                if (chaos.dashCount === 0) {
+                  // 冲刺序列结束
+                  this.effectsSystem.addScreenEffect('shake', 0.6, 500, '#FF00FF')
+                  chaos.dashExecuted = []
+                }
+              }
+            }
+            
+            // 如果时间超过1.5秒，重置冲刺序列
+            if (timeSinceStart > 2000) {
+              chaos.dashCount = 0
+              chaos.dashExecuted = []
+            }
+          }
+        }
+        
+        this.handleContactDamage(enemy, this.currentLevel)
+        break
+
+      case 'frost_lord':
+      case 'storm_king':
+      case 'necromancer':
+        // 新Boss类型：使用通用Boss AI逻辑
+        // 这些Boss会移动、攻击，并拥有特殊技能
+        const newBoss = enemy as any
+        if (!newBoss.lastAttack) newBoss.lastAttack = now - 3000
+        if (!newBoss.attackCooldown) newBoss.attackCooldown = 2000
+        if (!newBoss.lastSkill) newBoss.lastSkill = now
+        if (!newBoss.skillCooldown) newBoss.skillCooldown = 10000
+        
+        // Boss移动逻辑（保持距离，不贴脸）
+        if (distanceSq > 0) {
+          const dist = getDistance()
+          if (dist > 0) {
+            // 大幅降低Boss基础速度
+            const base = Math.min(enemy.speed || 0.45, 0.35)
+            const speed = base * ((this as any)._motionScale || 1)
+            
+            // 目标维持距离（停靠距离），显著增大
+            const contactDist = 15 + (enemy.size || 24)
+            const stopDist = Math.max(contactDist + 120, 180)
+            const minDist = contactDist + 40
+            
+            const nx = dx / (dist || 1)
+            const ny = dy / (dist || 1)
+            
+            if (dist > stopDist + 15) {
+              // 距离过远：向玩家靠近，但速度较慢
+              const approachSpeed = speed * 0.7
+              enemy.x += nx * approachSpeed
+              enemy.y += ny * approachSpeed
+            } else if (dist < stopDist - 15) {
+              // 距离过近：后退到安全距离
+              const retreatSpeed = speed * 0.8
+              enemy.x -= nx * retreatSpeed
+              enemy.y -= ny * retreatSpeed
+            } else {
+              // 距离合适：大幅减速或停止，偶尔小幅侧移
+              if (Math.random() < 0.3) {
+                const strafe = speed * 0.3
+                enemy.x += -ny * strafe
+                enemy.y += nx * strafe
+              }
+              // 70%的时间保持静止
+            }
+            
+            // 强制最小分离，避免进入接触伤害半径
+            const actualDistX = enemy.x - this.playerX
+            const actualDistY = enemy.y - this.playerY
+            const actualDist = Math.hypot(actualDistX, actualDistY) || 1
+            if (actualDist < minDist) {
+              const nxx = actualDistX / actualDist
+              const nyy = actualDistY / actualDist
+              enemy.x = this.playerX + nxx * minDist
+              enemy.y = this.playerY + nyy * minDist
+              const strafe2 = ((this as any)._motionScale || 1) * 0.3
+              enemy.x += -nyy * strafe2
+              enemy.y += nxx * strafe2
+            }
+          }
+        }
+        
+        // 远程攻击
+        const newBossAttackRangeSq = 400 * 400
+        let bossDamage = 0
+        if (now - newBoss.lastAttack >= newBoss.attackCooldown && distanceSq > 0 && distanceSq < newBossAttackRangeSq) {
+          const angle = Math.atan2(dy, dx)
+          const bulletSpeed = 7
+          let baseDamage: number
+          if (this.currentLevel <= 6) {
+            baseDamage = 0.6 + (this.currentLevel - 1) * 0.05
+          } else if (this.currentLevel <= 10) {
+            baseDamage = 0.85 + (this.currentLevel - 6) * 0.25
+          } else if (this.currentLevel <= 15) {
+            baseDamage = 1.85 + (this.currentLevel - 10) * 0.35
+          } else {
+            baseDamage = 3.6 + (this.currentLevel - 15) * 0.5
+          }
+          bossDamage = baseDamage * 1.3
+          
+          // 根据Boss类型发射不同数量的投射物
+          let projectileCount = 1
+          if (enemy.type === 'storm_king') {
+            projectileCount = 2 // 风暴之王发射2发
+          } else if (enemy.type === 'necromancer') {
+            projectileCount = 1 // 死灵法师发射1发
+          }
+          
+          for (let i = 0; i < projectileCount; i++) {
+            const spreadAngle = projectileCount > 1 ? (i - 0.5) * 0.3 : 0
+            this.projectiles.push({
+              x: enemy.x,
+              y: enemy.y,
+              vx: Math.cos(angle + spreadAngle) * bulletSpeed,
+              vy: Math.sin(angle + spreadAngle) * bulletSpeed,
+              damage: bossDamage,
+              isCrit: false,
+              life: 400,
+              pierce: 0,
+              maxPierce: 0,
+              owner: 'enemy',
+              isGrenade: false
+            })
+          }
+          newBoss.lastAttack = now
+        }
+        
+        // 特殊技能
+        if (now - newBoss.lastSkill >= newBoss.skillCooldown) {
+          if (enemy.type === 'frost_lord') {
+            // 冰霜领主：召唤冰霜区域
+            if (!newBoss.frostZones) newBoss.frostZones = []
+            newBoss.frostZones.push({
+              x: this.playerX,
+              y: this.playerY,
+              radius: 80,
+              startTime: now,
+              duration: 5000,
+              damagePerTick: 1 + this.currentLevel * 0.2,
+              tickInterval: 500,
+              lastTick: now
+            })
+            // 限制冰霜区域数量
+            if (newBoss.frostZones.length > 3) {
+              newBoss.frostZones = newBoss.frostZones.slice(-3)
+            }
+          } else if (enemy.type === 'storm_king') {
+            // 风暴之王：召唤闪电链
+            const lightningAngle = Math.atan2(dy, dx)
+            // 计算伤害（如果bossDamage未定义，使用基础伤害）
+            let skillDamage = bossDamage > 0 ? bossDamage * 1.2 : (10 + this.currentLevel * 1.5)
+            for (let i = 0; i < 3; i++) {
+              const angle = lightningAngle + (i - 1) * 0.4
+              this.projectiles.push({
+                x: enemy.x,
+                y: enemy.y,
+                vx: Math.cos(angle) * 10,
+                vy: Math.sin(angle) * 10,
+                damage: skillDamage,
+                isCrit: false,
+                life: 300,
+                pierce: 1,
+                maxPierce: 1,
+                owner: 'enemy',
+                isGrenade: false
+              })
+            }
+          } else if (enemy.type === 'necromancer') {
+            // 死灵法师：召唤骷髅
+            this.summonMinions(enemy, 2, 'infantry')
+          }
+          newBoss.lastSkill = now
+        }
+        
+        // 处理冰霜区域
+        if (enemy.type === 'frost_lord' && newBoss.frostZones) {
+          for (let i = newBoss.frostZones.length - 1; i >= 0; i--) {
+            const zone = newBoss.frostZones[i]
+            if (!zone || now - zone.startTime > zone.duration) {
+              newBoss.frostZones.splice(i, 1)
+              continue
+            }
+            const dx = this.playerX - zone.x
+            const dy = this.playerY - zone.y
+            const distSq = dx * dx + dy * dy
+            if (distSq < zone.radius * zone.radius) {
+              if (now - zone.lastTick >= zone.tickInterval) {
+                if (now >= this.playerIFrameUntil) {
+                  this.playerHealth -= zone.damagePerTick
+                  this.playerIFrameUntil = now + 200
+                }
+                zone.lastTick = now
+              }
+            }
           }
         }
         
@@ -2353,6 +3800,7 @@ export class TestGameEngine {
   }
 
   // 敌人的远程攻击
+  // **关键修复**：移除setTimeout，改用时间戳延迟机制，防止定时器累积导致内存泄漏和卡死
   private enemyRangedAttack(enemy: any) {
     // 创建预警线 - 使用当前玩家位置
     const now = Date.now()
@@ -2361,83 +3809,96 @@ export class TestGameEngine {
       startY: enemy.y,
       endX: this.playerX,
       endY: this.playerY,
-      time: now
+      time: now,
+      targetX: this.playerX, // 保存目标位置
+      targetY: this.playerY,
+      fireTime: now + 1000 // 1秒后发射
     }
-
-    // 1秒后发射子弹 - 使用发射时的最新玩家位置
-    setTimeout(() => {
-      // 检查敌人是否还存在
-      if (enemy && this.enemies.includes(enemy)) {
-        // **修复**：使用当前最新的玩家位置，而不是1秒前的位置
-        const dx = this.playerX - enemy.x
-        const dy = this.playerY - enemy.y
+  }
+  
+  // **新增**：处理延迟发射的投射物（在主更新循环中调用）
+  private processDelayedRangedAttacks() {
+    const now = Date.now()
+    const pendingProjectiles: Array<{enemy: any, targetX: number, targetY: number}> = []
+    
+    // 检查所有敌人的预警线，看是否应该发射
+    for (const enemy of this.enemies) {
+      if (enemy.warningLine && enemy.warningLine.fireTime && now >= enemy.warningLine.fireTime) {
+        // 应该发射了
+        const targetX = enemy.warningLine.targetX || this.playerX
+        const targetY = enemy.warningLine.targetY || this.playerY
+        
+        const dx = targetX - enemy.x
+        const dy = targetY - enemy.y
         const distance = Math.sqrt(dx * dx + dy * dy)
-
+        
         if (distance > 0) {
-          // 投射物速度：每帧10像素（与玩家投射物速度类似，玩家是12每帧）
-          const bulletSpeed = 10
-          const vx = (dx / distance) * bulletSpeed
-          const vy = (dy / distance) * bulletSpeed
-
-          // **修复**：前6层保持极低伤害，从第7层开始增加
-          let baseDamage: number
-          if (this.currentLevel <= 6) {
-            // 前6层：极低伤害（保持稳定）
-            baseDamage = 0.6 + (this.currentLevel - 1) * 0.05 // 0.6, 0.65, 0.7, 0.75, 0.8, 0.85
-          } else if (this.currentLevel <= 10) {
-            // 第7-10层：开始缓慢增长
-            baseDamage = 0.85 + (this.currentLevel - 6) * 0.25 // 1.1, 1.35, 1.6, 1.85
-          } else if (this.currentLevel <= 15) {
-            // 第11-15层：中等增长
-            baseDamage = 1.85 + (this.currentLevel - 10) * 0.35 // 2.2, 2.55, 2.9, 3.25, 3.6
-          } else {
-            // 第16层之后：正常增长
-            baseDamage = 3.6 + (this.currentLevel - 15) * 0.5
-          }
-          
-          let damage = baseDamage
-          if (enemy.type === 'archer') {
-            // 弓箭手：伤害与基础相同（不再额外增加）
-            damage = baseDamage * 1.0
-          } else if (enemy.type === 'sniper') {
-            // 狙击手：只比基础高3%（大幅降低）
-            damage = baseDamage * 1.03
-          }
-
+          pendingProjectiles.push({ enemy, targetX, targetY })
+        }
+        
+        // 清除预警线
+        enemy.warningLine = undefined
+      }
+    }
+    
+    // 处理所有待发射的投射物
+    for (const { enemy, targetX, targetY } of pendingProjectiles) {
+      const dx = targetX - enemy.x
+      const dy = targetY - enemy.y
+      const distance = Math.sqrt(dx * dx + dy * dy)
+      
+      if (distance > 0) {
+        // 投射物速度：每帧10像素
+        const bulletSpeed = 10
+        const vx = (dx / distance) * bulletSpeed
+        const vy = (dy / distance) * bulletSpeed
+        
+        // 计算伤害
+        let baseDamage: number
+        if (this.currentLevel <= 6) {
+          baseDamage = 0.6 + (this.currentLevel - 1) * 0.05
+        } else if (this.currentLevel <= 10) {
+          baseDamage = 0.85 + (this.currentLevel - 6) * 0.25
+        } else if (this.currentLevel <= 15) {
+          baseDamage = 1.85 + (this.currentLevel - 10) * 0.35
+        } else {
+          baseDamage = 3.6 + (this.currentLevel - 15) * 0.5
+        }
+        
+        let damage = baseDamage
+        if (enemy.type === 'archer') {
+          damage = baseDamage * 1.0
+        }
+        
+        // 限制投射物数量
+        if (this.projectiles.length < this.MAX_PROJECTILES) {
           const newProjectile = {
             x: enemy.x,
             y: enemy.y,
             vx,
             vy,
             damage,
-            isCrit: Math.random() < 0.15, // 15% 暴击率
-            life: 360, // 增加生命周期到6秒（360帧，60fps）
+            isCrit: Math.random() < 0.15,
+            life: 360,
             pierce: 0,
-            maxPierce: 0, // 敌人投射物不能穿透，击中即消失
+            maxPierce: 0,
             owner: 'enemy' as const,
-            isGrenade: false // 明确标记不是炸弹
+            isGrenade: false
           }
           
           this.projectiles.push(newProjectile)
-          
-          console.log(`💥 ${enemy.type}发射投射物! 伤害: ${damage}, 速度: (${vx.toFixed(2)}, ${vy.toFixed(2)}), 起始位置: (${enemy.x.toFixed(1)}, ${enemy.y.toFixed(1)}), 目标位置: (${this.playerX.toFixed(1)}, ${this.playerY.toFixed(1)}), 目标距离: ${distance.toFixed(1)}, 投射物数组大小: ${this.projectiles.length}`)
           
           // 添加射击特效
           this.addHitEffect(enemy.x, enemy.y, false)
           
           // 播放敌人远程攻击音效
           this.audioSystem.playSoundEffect('enemy_attack', {
-            volume: enemy.type === 'sniper' ? 1.2 : 1.0,
-            pitch: enemy.type === 'sniper' ? 0.8 : 1.0 // 狙击手音调更低
+            volume: 1.0,
+            pitch: 1.0
           })
         }
       }
-      
-      // 清除预警线
-      if (enemy) {
-        enemy.warningLine = undefined
-      }
-    }, 1000)
+    }
   }
 
   // 创建护盾墙
@@ -2471,17 +3932,20 @@ export class TestGameEngine {
       this.enemies.push(basicEnemy)
     }
 
-    // 治疗光环：治疗附近敌人
-    this.enemies.forEach(other => {
+    // **关键修复**：治疗光环：治疗附近敌人，限制检查数量防止性能问题
+    const maxHealCheck = Math.min(this.enemies.length, 30) // 最多检查30个敌人
+    for (let i = 0; i < maxHealCheck; i++) {
+      const other = this.enemies[i]
+      if (!other || other === enemy) continue
       const dxx = other.x - enemy.x
       const dyy = other.y - enemy.y
       const distSq = dxx * dxx + dyy * dyy
       const healRange = this.ENEMY_SKILL_RANGES.HEALER_HEAL_RANGE
       const healRangeSq = healRange * healRange
-      if (distSq < healRangeSq && other !== enemy && other.health < other.maxHealth) {
+      if (distSq < healRangeSq && other.health < other.maxHealth) {
         other.health = Math.min(other.maxHealth, other.health + 5)
       }
-    })
+    }
   }
   
   // 投弹手攻击
@@ -2518,18 +3982,49 @@ export class TestGameEngine {
     
     console.log(`💣 投弹手发射！目标距离: ${distance.toFixed(1)}, 预计伤害: ${grenadeDamage}`)
   }
-  
   // 召唤师召唤
   private summonMinions(enemy: any, count: number = 2, minionType: string = 'bug') {
     // 召唤小怪，使用createEnemyByType确保完整初始化
     const spawnMinDist = this.ENEMY_SKILL_RANGES.SUMMONER_SPAWN_DISTANCE
     const spawnMaxDist = this.ENEMY_SKILL_RANGES.SUMMONER_SPAWN_MAX_DISTANCE
     
+    // 添加明显的召唤特效（在召唤前）
+    this.effectsSystem.createParticleEffect('magic_burst', enemy.x, enemy.y, {
+      count: 60,
+      spread: 360,
+      speed: { min: 2, max: 5 },
+      size: { min: 5, max: 10 },
+      life: { min: 500, max: 1000 },
+      colors: ['#ff00ff', '#ff44ff', '#ff88ff', '#ffffff'],
+      fadeOut: true
+    })
+    // 添加召唤阵特效
+    this.effectsSystem.createParticleEffect('energy_discharge', enemy.x, enemy.y, {
+      count: 40,
+      spread: 360,
+      speed: { min: 1, max: 3 },
+      size: { min: 8, max: 15 },
+      life: { min: 600, max: 1200 },
+      colors: ['#ff00ff', '#ff88ff', '#ffffff'],
+      fadeOut: true
+    })
+    
     for (let i = 0; i < count; i++) {
-      const angle = Math.random() * Math.PI * 2
+      const angle = (Math.PI * 2 / count) * i  // 均匀分布角度
       const offset = spawnMinDist + Math.random() * (spawnMaxDist - spawnMinDist)
       const spawnX = enemy.x + Math.cos(angle) * offset
       const spawnY = enemy.y + Math.sin(angle) * offset
+      
+      // 添加每个召唤位置的生成特效
+      this.effectsSystem.createParticleEffect('magic_burst', spawnX, spawnY, {
+        count: 30,
+        spread: 360,
+        speed: { min: 1, max: 4 },
+        size: { min: 4, max: 8 },
+        life: { min: 400, max: 800 },
+        colors: ['#ff00ff', '#ff44ff', '#ffffff'],
+        fadeOut: true
+      })
       
       // 使用正确的创建方法，确保所有属性都被初始化
       const baseHealth = (20 * (1.0 + (this.currentLevel - 1) * 0.1)) * 0.1
@@ -2695,9 +4190,13 @@ export class TestGameEngine {
           if (projectile.isCrit) {
             const explosionRadius = 60
             const explosionDamage = damage * 0.5
-            // 对范围内敌人造成伤害
-            this.enemies.forEach(target => {
-              if (target === enemy || target.health <= 0) return
+            // 对范围内敌人造成伤害（性能优化：限制检查数量）
+            const maxExplosionTargets = Math.min(this.enemies.length, 30) // 最多检查30个敌人
+            let checkedCount = 0
+            for (const target of this.enemies) {
+              if (checkedCount >= maxExplosionTargets) break
+              if (target === enemy || target.health <= 0) continue
+              
               const dx = target.x - enemy.x
               const dy = target.y - enemy.y
               const distSq = dx * dx + dy * dy
@@ -2709,7 +4208,8 @@ export class TestGameEngine {
                 // 添加爆炸特效
                 this.addHitEffect(target.x, target.y, false, '#ff6600')
               }
-            })
+              checkedCount++
+            }
             
             // 添加爆炸特效
             this.effectsSystem.createExplosionEffect(enemy.x, enemy.y, explosionRadius)
@@ -2717,6 +4217,47 @@ export class TestGameEngine {
           }
           break
         }
+      }
+    }
+  }
+
+  // 混沌共鸣：随机触发特殊效果（15%几率）
+  private applyChaosResonance(enemy: any, projectile: any, damage: number, availableSpecialEffects: string[]) {
+    if (!enemy || enemy.health <= 0) return
+    
+    // 15%几率触发
+    if (Math.random() < 0.15) {
+      // 可触发的特殊效果列表
+      const possibleEffects = [
+        'on_hit_chain_lightning',
+        'on_hit_freeze',
+        'on_hit_poison',
+        'on_crit_explode'
+      ]
+      
+      // 随机选择一个效果（如果玩家已经拥有该效果，则使用玩家已有的效果；否则使用随机效果）
+      const randomEffect = possibleEffects[Math.floor(Math.random() * possibleEffects.length)]
+      
+      // 如果玩家已经拥有该效果，直接使用；否则临时触发一次
+      if (availableSpecialEffects.includes(randomEffect)) {
+        // 使用玩家已有的效果（但降低触发几率，避免重复触发）
+        // 这里不重复触发，因为已经在applySpecialEffectsOnHit中处理了
+      } else {
+        // 临时触发一次随机效果
+        const tempEffects = [randomEffect]
+        this.applySpecialEffectsOnHit(enemy, projectile, damage, tempEffects)
+        
+        // 添加混沌共鸣特效 - 彩虹色粒子
+        this.effectsSystem.createParticleEffect('magic_burst', enemy.x, enemy.y, {
+          count: 25,
+          colors: ['#ff0000', '#ff8800', '#ffff00', '#00ff00', '#00aaff', '#8800ff', '#ff00ff'],
+          size: { min: 3, max: 7 },
+          speed: { min: 50, max: 120 },
+          life: { min: 600, max: 1200 },
+          spread: 360
+        })
+        // 添加彩虹击中特效
+        this.addHitEffect(enemy.x, enemy.y, false, '#ff00ff')
       }
     }
   }
@@ -2778,6 +4319,11 @@ export class TestGameEngine {
 
   // 自爆伤害（修复全图伤害bug）
   private handleExplosion(enemy: any, explosionRadius: number, explosionDamage: number) {
+    // 应用"受到伤害增加"的Debuff
+    const player = this.gameState?.player as any
+    if (player?.damageTakenMultiplier) {
+      explosionDamage = explosionDamage * player.damageTakenMultiplier
+    }
     // **性能优化**：使用平方距离避免Math.sqrt
     const dx = enemy.x - this.playerX
     const dy = enemy.y - this.playerY
@@ -2842,9 +4388,12 @@ export class TestGameEngine {
         })
       }
   }
-
   private updateProjectiles() {
     // **性能优化**：限制投射物总数，自动清理旧投射物
+    // **关键修复**：最后20秒时更激进的清理策略
+    const timeRemainingProj = this.gameTime
+    const isNearEndProj = timeRemainingProj < 20 // 最后20秒
+    
     if (this.projectiles.length > this.MAX_PROJECTILES) {
       // 保留最新的投射物，删除最旧的
       const excess = this.projectiles.length - this.MAX_PROJECTILES
@@ -2852,13 +4401,56 @@ export class TestGameEngine {
       console.warn(`[性能] 投射物数量超限，清理 ${excess} 个旧投射物`)
     }
     
-    // **调试日志**：检查投射物数量（降低频率）
-    const enemyProjectiles = this.projectiles.filter(p => p.owner === 'enemy')
-    if (enemyProjectiles.length > 0 && Math.random() < 0.01) { // 降低到1%概率
-      console.log(`📊 投射物状态: 总数=${this.projectiles.length}, 敌人投射物=${enemyProjectiles.length}, 玩家投射物=${this.projectiles.length - enemyProjectiles.length}`)
+    // **关键性能修复**：最后20秒时适度清理（不要过度优化导致卡顿）
+    if (isNearEndProj) {
+      // **关键修复**：最后20秒时，强制限制投射物数量到70%（从60%提高到70%，减少卡顿）
+      const targetCount = Math.floor(this.MAX_PROJECTILES * 0.7)
+      if (this.projectiles.length > targetCount) {
+        const excess = this.projectiles.length - targetCount
+        this.projectiles.splice(0, excess)
+      }
     }
     
-    this.projectiles.forEach((projectile, index) => {
+    // **性能优化**：移除filter操作，减少开销
+    
+    // **关键性能修复**：限制每帧处理的投射物数量，防止O(n*m)复杂度导致卡死
+    // **关键修复**：根据敌人数量和时间动态调整处理数量
+    // **重要修复**：优先处理玩家的投射物，确保伤害不会丢失
+    const enemyCount = this.enemies.length
+    
+    // 分离玩家投射物和敌人投射物
+    const playerProjectiles: typeof this.projectiles = []
+    const enemyProjectiles: typeof this.projectiles = []
+    
+    for (const proj of this.projectiles) {
+      if (proj.owner === 'player') {
+        playerProjectiles.push(proj)
+      } else {
+        enemyProjectiles.push(proj)
+      }
+    }
+    
+    // **关键修复**：优先处理所有玩家投射物，确保伤害不丢失
+    // 最后20秒时，仍然处理所有玩家投射物，但限制敌人投射物
+    let maxPlayerProjectiles = playerProjectiles.length // 总是处理所有玩家投射物
+    let maxEnemyProjectiles: number
+    
+    if (isNearEndProj) {
+      // **关键修复**：最后20秒：适度限制敌人投射物，但保持玩家投射物完整处理（不要过度优化导致卡顿）
+      maxEnemyProjectiles = Math.min(enemyProjectiles.length, 60) // 只处理60个敌人投射物（从40提高到60，减少卡顿）
+    } else if (enemyCount > 60) {
+      maxEnemyProjectiles = Math.min(enemyProjectiles.length, 50) // 敌人很多时处理50个
+    } else if (enemyCount > 40) {
+      maxEnemyProjectiles = Math.min(enemyProjectiles.length, 70) // 敌人中等时处理70个
+    } else {
+      maxEnemyProjectiles = Math.min(enemyProjectiles.length, 90) // 敌人少时处理90个
+    }
+    
+    // **关键修复**：先处理所有玩家投射物（确保伤害不丢失）
+    for (let idx = 0; idx < maxPlayerProjectiles; idx++) {
+      const projectile = playerProjectiles[idx]
+      if (!projectile) continue
+      
       // 处理重力效果（投弹手的抛物线投射物）
       if (projectile.isGrenade) {
         // 添加重力
@@ -2905,35 +4497,310 @@ export class TestGameEngine {
           this.effectsSystem.createExplosionEffect(explosionX, explosionY, explosionRadius)
           this.projectileVisualSystem.createExplosion(explosionX, explosionY, explosionRadius, 'fire')
           
-      console.log(`💣 炸弹爆炸！位置: (${explosionX.toFixed(1)}, ${explosionY.toFixed(1)}), 伤害: ${explosionDamage}`)
-      
       // 播放爆炸音效
       this.audioSystem.playSoundEffect('explosion', { volume: 1.0 })
       
       // 移除投射物
       projectile.life = 0
-          return
+          continue
         }
         
         projectile.life--
-        return // 炸弹不需要继续处理普通投射物逻辑
+        continue // 炸弹处理完，继续下一个投射物
       }
       
       // 普通投射物的移动（炸弹已经在上面处理）
+      // 追踪弹：朝向玩家移动
+      if ((projectile as any).isHoming && projectile.owner === 'enemy') {
+        const dx = this.playerX - projectile.x
+        const dy = this.playerY - projectile.y
+        const dist = Math.sqrt(dx * dx + dy * dy)
+        if (dist > 0) {
+          const homingSpeed = 6
+          const turnRate = 0.1 // 转向速度
+          const currentAngle = Math.atan2(projectile.vy, projectile.vx)
+          const targetAngle = Math.atan2(dy, dx)
+          let newAngle = currentAngle
+          
+          // 计算角度差
+          let angleDiff = targetAngle - currentAngle
+          while (angleDiff > Math.PI) angleDiff -= Math.PI * 2
+          while (angleDiff < -Math.PI) angleDiff += Math.PI * 2
+          
+          // 转向
+          if (Math.abs(angleDiff) > turnRate) {
+            newAngle = currentAngle + (angleDiff > 0 ? turnRate : -turnRate)
+          } else {
+            newAngle = targetAngle
+          }
+          
+          projectile.vx = Math.cos(newAngle) * homingSpeed
+          projectile.vy = Math.sin(newAngle) * homingSpeed
+        }
+      }
+      
+      // **关键修复**：改进碰撞检测，使用更精确的方法防止投射物穿过敌人
+      // 投射物速度可能很快，需要检查移动路径上的碰撞，而不仅仅是当前位置
+      const prevX = projectile.x
+      const prevY = projectile.y
       projectile.x += projectile.vx
       projectile.y += projectile.vy
       projectile.life--
 
-      // 区分玩家投射物和敌人投射物
-      if (projectile.owner === 'player') {
-        // 玩家的投射物 - 检查与敌人的碰撞
-        // **性能优化**：使用空间分区优化，只检查附近的敌人
-        // 如果敌人很多，先进行粗略筛选
-        const checkRadius = 100 // 只检查投射物周围100像素内的敌人
-        const checkRadiusSq = checkRadius * checkRadius
-        
-        for (let enemyIndex = 0; enemyIndex < this.enemies.length; enemyIndex++) {
+      // **关键修复**：如果投射物已经失效，跳过所有碰撞检测
+      if (projectile.life <= 0) {
+        continue
+      }
+      
+      // **关键修复**：计算投射物移动距离，用于更精确的碰撞检测
+      const moveDistance = Math.sqrt(projectile.vx * projectile.vx + projectile.vy * projectile.vy)
+      
+      // 玩家的投射物 - 检查与敌人的碰撞（已经在上面处理了移动）
+      // **关键性能修复**：大幅限制碰撞检测，防止O(n*m)复杂度导致30秒卡死
+      // **关键修复**：根据投射物速度动态调整检查半径，防止快速投射物穿过敌人
+      const baseCheckRadius = 50
+      const speedMultiplier = Math.min(2.0, 1.0 + moveDistance / 10) // 速度越快，检查半径越大
+      const checkRadius = baseCheckRadius * speedMultiplier
+      const checkRadiusSq = checkRadius * checkRadius
+      const maxEnemiesToCheck = Math.min(this.enemies.length, 15) // **关键修复**：从20降低到15，进一步减少检查次数
+      
+      // **关键修复**：如果敌人数量太多，使用更激进的碰撞检测优化
+      if (this.enemies.length > this.MAX_ENEMIES * 0.7) {
+        // **关键修复**：敌人太多时，只检查最近的敌人（最后20秒时更少）
+        const timeRemaining = this.gameTime
+        const isNearEnd = timeRemaining < 20
+        // **关键修复**：最后20秒时适度减少检查，但不要过度优化导致卡顿
+        const maxEnemiesToScan = isNearEnd ? 20 : 25 // 最后20秒时扫描20个敌人（从15提高到20，减少卡顿）
+        const maxEnemiesToCheck = isNearEnd ? 8 : 10 // 最后20秒时检查8个敌人（从5提高到8，减少卡顿）
+        const nearbyEnemies: Array<{enemy: any, distSq: number, index: number}> = []
+        // **关键修复**：限制扫描范围
+        for (let enemyIndex = 0; enemyIndex < Math.min(this.enemies.length, maxEnemiesToScan); enemyIndex++) {
           const enemy = this.enemies[enemyIndex]
+          if (!enemy) continue
+          
+          const dx = projectile.x - enemy.x
+          const dy = projectile.y - enemy.y
+          const roughDistanceSq = dx * dx + dy * dy
+          
+          if (roughDistanceSq <= checkRadiusSq) {
+            nearbyEnemies.push({ enemy, distSq: roughDistanceSq, index: enemyIndex })
+          }
+        }
+        
+          // **关键修复**：只检查最近的敌人（最后20秒时更少）
+          if (nearbyEnemies.length > 0) {
+            nearbyEnemies.sort((a, b) => a.distSq - b.distSq)
+            const enemiesToCheck = nearbyEnemies.slice(0, maxEnemiesToCheck)
+          
+          for (const { enemy, distSq: roughDistanceSq } of enemiesToCheck) {
+            // 检查是否已经击中过这个敌人
+            if (!projectile.hitEnemies) {
+              projectile.hitEnemies = new Set()
+            }
+            if (projectile.hitEnemies.has(enemy)) {
+              continue // 跳过已经击中过的敌人
+            }
+            
+            // **关键修复**：精确碰撞检测，使用更大的碰撞半径防止快速投射物穿过敌人
+            // 投射物速度越快，需要的碰撞半径越大
+            const baseCollisionRadius = 20 + enemy.size
+            const speedCollisionRadius = baseCollisionRadius + Math.min(10, moveDistance * 0.5) // 根据速度增加碰撞半径
+            const collisionRadiusSq = speedCollisionRadius * speedCollisionRadius
+            
+            // **关键修复**：检查投射物移动路径上的碰撞，而不仅仅是当前位置
+            // 如果投射物移动距离较大，检查路径中点
+            let checkX = projectile.x
+            let checkY = projectile.y
+            let finalDistanceSq = roughDistanceSq
+            if (moveDistance > 15) {
+              // 投射物移动距离较大，检查路径中点
+              checkX = (prevX + projectile.x) / 2
+              checkY = (prevY + projectile.y) / 2
+              const midDx = checkX - enemy.x
+              const midDy = checkY - enemy.y
+              const midDistSq = midDx * midDx + midDy * midDy
+              if (midDistSq < collisionRadiusSq) {
+                // 路径中点碰撞，使用中点位置
+                finalDistanceSq = midDistSq
+              }
+            }
+            
+            if (finalDistanceSq < collisionRadiusSq) {
+              let actualDamage = projectile.damage
+              const shieldEnemy = enemy as any
+              
+              // 护盾系统：优先攻击护盾
+              if (shieldEnemy.shield > 0) {
+                const shieldDamage = Math.min(shieldEnemy.shield, actualDamage)
+                shieldEnemy.shield -= shieldDamage
+                actualDamage -= shieldDamage
+                
+                // 护盾被攻击的特效（蓝色）
+                this.addHitEffect(enemy.x, enemy.y, false, '#00ffff')
+                
+                // 如果护盾被完全破坏
+                if (shieldEnemy.shield <= 0) {
+                  // 护盾破坏特效
+                  this.addHitEffect(enemy.x, enemy.y, true, '#ffff00')
+                }
+              }
+              
+              // 剩余伤害攻击本体
+              if (actualDamage > 0) {
+                enemy.health -= actualDamage
+                
+                // 生命偷取（从gameState获取）
+                const lifestealPercent = this.gameState?.player?.lifesteal || 0
+                if (lifestealPercent > 0) {
+                  const healAmount = Math.floor(actualDamage * lifestealPercent)
+                  this.playerHealth = Math.min(this.playerMaxHealth, this.playerHealth + healAmount)
+                }
+                
+                // 应用特殊效果（从player.specialEffects检查）
+                const specialEffects = (this.gameState?.player as any)?.specialEffects || []
+                if (specialEffects.length > 0) {
+                  this.applySpecialEffectsOnHit(enemy, projectile, actualDamage, specialEffects)
+                }
+                
+                // 添加击中特效
+                this.addHitEffect(enemy.x, enemy.y, projectile.isCrit)
+                
+                // 播放投射物命中音效
+                this.audioSystem.playSoundEffect('projectile_hit', {
+                  volume: projectile.isCrit ? 1.2 : 0.8,
+                  pitch: projectile.isCrit ? 1.5 : 1.0
+                })
+              }
+              
+              // 将敌人添加到已击中列表
+              projectile.hitEnemies!.add(enemy)
+              
+              // 穿透机制：增加已穿透次数
+              projectile.pierce++
+              
+              // 无论敌人是否死亡，都要检查穿透次数
+              if (projectile.pierce > projectile.maxPierce) {
+                projectile.life = 0
+                break // **关键修复**：击中后立即退出，避免继续检查
+              }
+              
+              if (enemy.health <= 0) {
+                // 应用击败敌人时的特殊效果
+                const specialEffects = (this.gameState?.player as any)?.specialEffects || []
+                if (specialEffects.length > 0) {
+                  this.applySpecialEffectsOnKill(enemy, specialEffects)
+                }
+                
+                // 播放敌人死亡音效
+                this.audioSystem.playSoundEffect('enemy_death')
+                
+                // **关键修复**：检查是否是Boss（包含所有可能的Boss类型）
+                const bossTypes = ['infantry_captain', 'fortress_guard', 'void_shaman', 'legion_commander']
+                const isBoss = enemy.type && bossTypes.includes(enemy.type)
+                
+                // 如果是第10关Boss（虫巢母体），清理所有待孵化的虫卵
+                if (enemy.type === 'fortress_guard') {
+                  const hiveMother = enemy as any
+                  if (hiveMother) {
+                    if (hiveMother.pendingEggs && Array.isArray(hiveMother.pendingEggs)) {
+                      hiveMother.pendingEggs = []
+                    }
+                    if (hiveMother.stormZones && Array.isArray(hiveMother.stormZones)) {
+                      hiveMother.stormZones = []
+                    }
+                  }
+                }
+                
+                // **关键修复**：确保所有Boss都被击败后才设置标志
+                if (isBoss) {
+                  if (this.gameState) {
+                    // 检查当前层是否还有存活的Boss
+                    const bossTypes = ['infantry_captain', 'fortress_guard', 'void_shaman', 'legion_commander', 'boss']
+                    const remainingBosses = this.enemies.filter(e => 
+                      e.type && bossTypes.includes(e.type) && e.health > 0
+                    )
+                    
+                    console.log(`[Boss死亡-碰撞1] 第${this.currentLevel}层Boss(${enemy.type})被击杀，剩余Boss数量: ${remainingBosses.length}`)
+                    
+                    // 只有当所有Boss都被击败后，才设置标志
+                    if (remainingBosses.length === 0) {
+                    if (!this.gameState.bossDefeated || this.gameState.bossDefeated !== this.currentLevel) {
+                      this.gameState.bossDefeated = this.currentLevel
+                      this.gameState.hasDefeatedBoss = true
+                        console.log(`[Boss死亡-碰撞1] ✅ 第${this.currentLevel}层所有Boss都被击败，设置bossDefeated=${this.currentLevel}`)
+                    } else {
+                        console.log(`[Boss死亡-碰撞1] 第${this.currentLevel}层所有Boss都被击败，但bossDefeated已设置为${this.gameState.bossDefeated}`)
+                      }
+                    } else {
+                      console.log(`[Boss死亡-碰撞1] 第${this.currentLevel}层还有${remainingBosses.length}个Boss存活，暂不设置bossDefeated标志`)
+                    }
+                  } else {
+                    console.error(`[Boss死亡-碰撞1] ❌ gameState为空，无法设置bossDefeated标志`)
+                  }
+                } else if (enemy.type && enemy.isElite) {
+                  // 如果不是Boss但是精英怪，记录日志用于调试
+                  console.log(`[Boss死亡-碰撞1] 敌人${enemy.type}是精英怪但不是Boss，isElite=${enemy.isElite}`)
+                }
+                
+                const isElite = enemy.isElite
+                if (isElite) {
+                  if (this.gameState && !this.gameState.showPassiveSelection) {
+                    if (this.gameState.hasDefeatedBoss) {
+                      this.gameState.extraAttributeSelect = true
+                    }
+                  }
+                }
+                
+                if (enemy.type === 'charger' || enemy.type === 'bomb_bat') {
+                  if (!(enemy as any).hasExploded) {
+                    (enemy as any).hasExploded = true
+                    const explosionRadius = enemy.type === 'charger' ? 80 : 100
+                    const explosionDamage = enemy.type === 'charger' ? 15 + this.currentLevel : 20 + this.currentLevel
+                    this.handleExplosion(enemy, explosionRadius, explosionDamage)
+                    this.effectsSystem.createExplosionEffect(enemy.x, enemy.y, explosionRadius)
+                    this.projectileVisualSystem.createExplosion(enemy.x, enemy.y, explosionRadius, 'fire')
+                  }
+                }
+                
+                enemy.health = 0
+                // **关键修复**：确保分数增加并同步
+                // 检查是否已经添加过分数，避免重复添加
+                if (!(enemy as any).scoreAdded) {
+                  const scoreGain = isElite ? 50 : 10
+                  this.score += scoreGain
+                  // 实时同步分数到gameState
+                  if (this.gameState) {
+                    this.gameState.score = this.score
+                    // 同步金币：击杀获得的金币与分数一致
+                    if (this.gameState.player) {
+                      this.gameState.player.gold = (this.gameState.player.gold || 0) + scoreGain
+                    }
+                  }
+                  // 标记已添加分数
+                  (enemy as any).scoreAdded = true
+                  // 调试日志（降低频率，避免日志过多）
+                  if (Math.random() < 0.1) { // 10%概率输出日志
+                    console.log(`[分数] 敌人死亡（碰撞检测），添加分数: ${scoreGain}，当前总分: ${this.score}`)
+                  }
+                }
+                this.addDeathEffect(enemy.x, enemy.y)
+              }
+            }
+          }
+        }
+      } else {
+        // **关键修复**：敌人数量正常时，使用优化的碰撞检测
+        // 快速筛选：只检查距离投射物最近的敌人
+        const nearbyEnemies: Array<{enemy: any, distSq: number, index: number}> = []
+        // **关键修复**：限制遍历范围（最后20秒时更少）
+        const timeRemaining = this.gameTime
+        const isNearEnd = timeRemaining < 20
+        const maxEnemiesToScan = isNearEnd 
+          ? Math.min(this.enemies.length, 20) // 最后20秒时扫描20个敌人（从15提高到20，减少卡顿）
+          : Math.min(this.enemies.length, 25) // 正常时扫描25个敌人
+        for (let enemyIndex = 0; enemyIndex < maxEnemiesToScan; enemyIndex++) {
+          const enemy = this.enemies[enemyIndex]
+          if (!enemy) continue
           
           // 快速筛选：只检查距离投射物较近的敌人
           const dx = projectile.x - enemy.x
@@ -2945,6 +4812,18 @@ export class TestGameEngine {
             continue
           }
           
+          // 收集附近的敌人
+          nearbyEnemies.push({ enemy, distSq: roughDistanceSq, index: enemyIndex })
+        }
+        
+          // **关键修复**：按距离排序，只处理最近的敌人（最后20秒时适度减少）
+          const maxCheck = isNearEnd 
+            ? Math.min(maxEnemiesToCheck, 6) // 最后20秒时最多检查6个（从5提高到6，减少卡顿）
+            : Math.min(maxEnemiesToCheck, 8) // 正常时最多检查8个
+        nearbyEnemies.sort((a, b) => a.distSq - b.distSq)
+        const enemiesToCheck = nearbyEnemies.slice(0, maxCheck)
+        
+        for (const { enemy, distSq: roughDistanceSq } of enemiesToCheck) {
           // 检查是否已经击中过这个敌人
           if (!projectile.hitEnemies) {
             projectile.hitEnemies = new Set()
@@ -2992,6 +4871,12 @@ export class TestGameEngine {
                 this.applySpecialEffectsOnHit(enemy, projectile, actualDamage, specialEffects)
               }
               
+              // 应用Boss专属效果（混沌共鸣：随机触发特殊效果）
+              const bossExclusiveEffects = (this.gameState?.player as any)?.bossExclusiveEffects || []
+              if (bossExclusiveEffects.includes('random_special_proc')) {
+                this.applyChaosResonance(enemy, projectile, actualDamage, specialEffects)
+              }
+              
               // 添加击中特效
               this.addHitEffect(enemy.x, enemy.y, projectile.isCrit)
               
@@ -3009,11 +4894,9 @@ export class TestGameEngine {
             projectile.pierce++
             
             // 无论敌人是否死亡，都要检查穿透次数
-            // maxPierce表示可以穿透的敌人数量，总共可以击中maxPierce+1个敌人
-            // 例如：maxPierce=1时，可以穿透1个敌人，击中2个敌人
-            // pierce表示已穿透的敌人数量，所以当pierce > maxPierce时移除
             if (projectile.pierce > projectile.maxPierce) {
               projectile.life = 0
+              break // **关键修复**：击中后立即退出，避免继续检查
             }
             
             if (enemy.health <= 0) {
@@ -3025,69 +4908,171 @@ export class TestGameEngine {
               
               // 播放敌人死亡音效
               this.audioSystem.playSoundEffect('enemy_death')
-              // 检查是否是Boss（通过type判断）
-              const isBoss = enemy.type && ['infantry_captain', 'fortress_guard', 'void_shaman', 'legion_commander'].includes(enemy.type)
               
-              // 如果是第10关Boss（虫巢母体），清理所有待孵化的虫卵
-              if (enemy.type === 'fortress_guard') {
-                const hiveMother = enemy as any
-                if (hiveMother && hiveMother.pendingEggs && Array.isArray(hiveMother.pendingEggs)) {
-                  console.log(`[Boss死亡] 清理虫巢母体的 ${hiveMother.pendingEggs.length} 个待孵化虫卵`)
-                  hiveMother.pendingEggs = []
-                }
-              }
+              // **关键修复**：检查是否是Boss（包含所有可能的Boss类型）
+              const bossTypes = ['infantry_captain', 'fortress_guard', 'void_shaman', 'legion_commander', 'boss']
+              const isBoss = enemy.type && bossTypes.includes(enemy.type)
               
               if (isBoss) {
-                // Boss死亡：标记已击杀Boss（不立即暂停，等待本层结束后再选择奖励）
+                // **关键修复**：确保所有Boss都被击败后才设置标志
                 if (this.gameState) {
-                  this.gameState.bossDefeated = this.currentLevel
-                  this.gameState.hasDefeatedBoss = true // 标记已击杀boss，解锁额外属性选择
-                  // **修复**：不立即暂停，让游戏继续，在本层结束后（nextLevel时）再显示奖励选择
-                  console.log(`[Boss死亡] 第${this.currentLevel}层Boss被击杀，标记bossDefeated=${this.currentLevel}，将在本层结束后显示奖励选择`)
+                  // 检查当前层是否还有存活的Boss（注意：此时enemy还未从数组中移除）
+                  const remainingBosses = this.enemies.filter(e => 
+                    e !== enemy && e.type && bossTypes.includes(e.type) && e.health > 0
+                  )
+                  
+                  console.log(`[Boss死亡-碰撞2] 第${this.currentLevel}层Boss(${enemy.type})被击杀，剩余Boss数量: ${remainingBosses.length}`)
+                  
+                  // 只有当所有Boss都被击败后，才设置标志
+                  if (remainingBosses.length === 0) {
+                  if (!this.gameState.bossDefeated || this.gameState.bossDefeated !== this.currentLevel) {
+                    this.gameState.bossDefeated = this.currentLevel
+                    this.gameState.hasDefeatedBoss = true
+                      console.log(`[Boss死亡-碰撞2] ✅ 第${this.currentLevel}层所有Boss都被击败，设置bossDefeated=${this.currentLevel}`)
+                  } else {
+                      console.log(`[Boss死亡-碰撞2] 第${this.currentLevel}层所有Boss都被击败，但bossDefeated已设置为${this.gameState.bossDefeated}`)
+                    }
+                  } else {
+                    console.log(`[Boss死亡-碰撞2] 第${this.currentLevel}层还有${remainingBosses.length}个Boss存活，暂不设置bossDefeated标志`)
+                  }
+                } else {
+                  console.error(`[Boss死亡-碰撞2] ❌ gameState为空，无法设置bossDefeated标志`)
                 }
+              } else if (enemy.type && enemy.isElite) {
+                // 如果不是Boss但是精英怪，记录日志用于调试
+                console.log(`[Boss死亡-碰撞2] 敌人${enemy.type}是精英怪但不是Boss，isElite=${enemy.isElite}`)
               }
+              
               // 检查是否精英怪
               const isElite = enemy.isElite
               if (isElite) {
-                // 触发额外属性选择（只有击杀过boss才能选择）
                 if (this.gameState && !this.gameState.showPassiveSelection) {
-                  // 只有击杀过boss才能触发额外属性选择
                   if (this.gameState.hasDefeatedBoss) {
                     this.gameState.extraAttributeSelect = true
-                  } else {
-                    console.log('⚠️ 未击杀boss，无法选择额外属性')
                   }
                 }
               }
               
-              // 自爆型敌人死后自爆（统一在这里处理，避免重复爆炸）
+              // 自爆型敌人死后自爆
               if (enemy.type === 'charger' || enemy.type === 'bomb_bat') {
-                // 检查是否已经爆炸过（防止重复触发）
                 if (!(enemy as any).hasExploded) {
-                  (enemy as any).hasExploded = true // 标记已爆炸
+                  (enemy as any).hasExploded = true
                   const explosionRadius = enemy.type === 'charger' ? 80 : 100
                   const explosionDamage = enemy.type === 'charger' ? 15 + this.currentLevel : 20 + this.currentLevel
                   this.handleExplosion(enemy, explosionRadius, explosionDamage)
-                  
-                  // 添加高级爆炸特效
                   this.effectsSystem.createExplosionEffect(enemy.x, enemy.y, explosionRadius)
                   this.projectileVisualSystem.createExplosion(enemy.x, enemy.y, explosionRadius, 'fire')
                 }
               }
               
-              this.enemies.splice(enemyIndex, 1)
-              // 增加分数
-              this.score += isElite ? 50 : 10
-              // 添加死亡特效
+              // 标记敌人死亡，稍后统一清理
+              enemy.health = 0
+              // **关键修复**：确保分数增加并同步
+              // 检查是否已经添加过分数，避免重复添加
+              if (!(enemy as any).scoreAdded) {
+                const scoreGain = isElite ? 50 : 10
+                this.score += scoreGain
+                // 实时同步分数到gameState
+                if (this.gameState) {
+                  this.gameState.score = this.score
+                  // 同步金币：击杀获得的金币与分数一致
+                  if (this.gameState.player) {
+                    this.gameState.player.gold = (this.gameState.player.gold || 0) + scoreGain
+                  }
+                }
+                // 标记已添加分数
+                (enemy as any).scoreAdded = true
+                // 调试日志（降低频率，避免日志过多）
+                if (Math.random() < 0.1) { // 10%概率输出日志
+                  console.log(`[分数] 敌人死亡（碰撞检测），添加分数: ${scoreGain}，当前总分: ${this.score}`)
+                }
+              }
               this.addDeathEffect(enemy.x, enemy.y)
-              enemyIndex-- // 调整索引，因为删除了一个敌人
             }
-            
-            // 不跳出循环，继续检测其他敌人（穿透多个敌人）
-            // 但是只会在不同帧检测到不同敌人，因为hitEnemies会阻止重复检测
           }
         }
-      } else if (projectile.owner === 'enemy') {
+      }
+    } // 结束玩家投射物处理循环
+    
+    // **关键修复**：处理敌人投射物（限制数量以优化性能）
+    for (let enemyIdx = 0; enemyIdx < maxEnemyProjectiles; enemyIdx++) {
+      const projectile = enemyProjectiles[enemyIdx]
+      if (!projectile) continue
+      
+      // 处理重力效果（投弹手的抛物线投射物）
+      if (projectile.isGrenade) {
+        const gravity = 0.2
+        const previousVy = projectile.vy
+        projectile.vy += gravity
+        projectile.x += projectile.vx
+        projectile.y += projectile.vy
+        
+        const groundLevel = this.canvas.height - 10
+        let shouldExplode = false
+        let explosionX = projectile.x
+        let explosionY = projectile.y
+        
+        if (projectile.y >= groundLevel && previousVy >= 0) {
+          explosionY = groundLevel
+          shouldExplode = true
+        } else {
+          const dx = projectile.x - this.playerX
+          const dy = projectile.y - this.playerY
+          const distToPlayerSq = dx * dx + dy * dy
+          const triggerDistSq = 30 * 30
+          if (distToPlayerSq < triggerDistSq && projectile.vy > 0) {
+            shouldExplode = true
+          }
+        }
+        
+        if (shouldExplode) {
+          const explosionRadius = this.ENEMY_SKILL_RANGES.GRENADIER_EXPLOSION_RADIUS
+          const explosionDamage = projectile.damage || 15 + this.currentLevel * 2
+          this.handleExplosion({ x: explosionX, y: explosionY }, explosionRadius, explosionDamage)
+          this.effectsSystem.createExplosionEffect(explosionX, explosionY, explosionRadius)
+          this.projectileVisualSystem.createExplosion(explosionX, explosionY, explosionRadius, 'fire')
+          this.audioSystem.playSoundEffect('explosion', { volume: 1.0 })
+          projectile.life = 0
+          continue
+        }
+        
+        projectile.life--
+        continue
+      }
+      
+      // 追踪弹：朝向玩家移动
+      if ((projectile as any).isHoming) {
+        const dx = this.playerX - projectile.x
+        const dy = this.playerY - projectile.y
+        const dist = Math.sqrt(dx * dx + dy * dy)
+        if (dist > 0) {
+          const homingSpeed = 6
+          const turnRate = 0.1
+          const currentAngle = Math.atan2(projectile.vy, projectile.vx)
+          const targetAngle = Math.atan2(dy, dx)
+          let newAngle = currentAngle
+          
+          let angleDiff = targetAngle - currentAngle
+          while (angleDiff > Math.PI) angleDiff -= Math.PI * 2
+          while (angleDiff < -Math.PI) angleDiff += Math.PI * 2
+          
+          if (Math.abs(angleDiff) > turnRate) {
+            newAngle = currentAngle + (angleDiff > 0 ? turnRate : -turnRate)
+          } else {
+            newAngle = targetAngle
+          }
+          
+          projectile.vx = Math.cos(newAngle) * homingSpeed
+          projectile.vy = Math.sin(newAngle) * homingSpeed
+        }
+      }
+      
+      projectile.x += projectile.vx
+      projectile.y += projectile.vy
+      projectile.life--
+      
+      // 处理敌人的投射物 - 检查与玩家的碰撞
+      if (projectile.life > 0) {
         // 敌人的投射物 - 检查与玩家的碰撞
         // 投弹手的炸弹不直接碰撞玩家，而是落地爆炸
         if (!projectile.isGrenade) {
@@ -3096,31 +5081,82 @@ export class TestGameEngine {
           const dy = projectile.y - this.playerY
           const distToPlayerSq = dx * dx + dy * dy
           // **修复**：增加碰撞半径，确保能正确击中（玩家半径15 + 投射物大小约10）
-          const collisionRadius = 25
+          const collisionRadius = 30
           const collisionRadiusSq = collisionRadius * collisionRadius
-          
-          // **调试日志**：每帧检查碰撞（但只在接近时输出）
-          if (distToPlayerSq < collisionRadiusSq * 4) { // 只在2倍碰撞半径内输出日志
-            const distance = Math.sqrt(distToPlayerSq)
-            console.log(`🎯 投射物接近玩家: 距离=${distance.toFixed(1)}, 碰撞半径=${collisionRadius}, 投射物位置=(${projectile.x.toFixed(1)}, ${projectile.y.toFixed(1)}), 玩家位置=(${this.playerX.toFixed(1)}, ${this.playerY.toFixed(1)})`)
-          }
           
           if (distToPlayerSq < collisionRadiusSq) {
             // 对玩家造成伤害
             const now = Date.now()
-            console.log(`🔥 投射物碰撞检测触发! 距离=${Math.sqrt(distToPlayerSq).toFixed(1)}, 伤害=${projectile.damage}, 接触无敌帧=${this.playerIFrameUntil}, 远程无敌帧=${this.playerProjectileIFrameUntil}, 当前时间=${now}`)
+            // **性能优化**：移除所有console.log，减少开销
             
             // **修复**：远程伤害使用独立的无敌帧系统，不受接触伤害影响
-            // 只检查远程伤害专用无敌帧（更短，比如100ms），这样远程伤害不会被接触伤害的无敌帧阻止
-            const projectileIFrameDuration = 100 // 远程伤害无敌帧：100ms（很短，主要用于防止同一投射物连续命中）
+            const projectileIFrameDuration = 100 // 远程伤害无敌帧：100ms
             
             if (now >= this.playerProjectileIFrameUntil) {
-              // **修复**：远程伤害不检查堆叠上限，因为堆叠上限是为接触伤害设计的
-              // 直接造成伤害
-              const oldHealth = this.playerHealth
+              // **修复**：远程伤害不检查堆叠上限
               const damageToApply = projectile.damage
-              this.playerHealth -= damageToApply
-              console.log(`✅ 远程伤害应用成功！伤害: ${damageToApply}, 血量: ${oldHealth} -> ${this.playerHealth}`)
+              
+              // **新增**：检查是否有临时护盾效果，优先消耗护盾
+              const specialEffects = (this.gameState?.player as any)?.specialEffects || []
+              const hasTempShield = specialEffects.includes('on_hit_temp_shield')
+              let actualDamage = damageToApply
+              
+              if (hasTempShield && this.gameState?.player) {
+                const player = this.gameState.player as any
+                const currentShield = player.shield || 0
+                
+                if (currentShield > 0) {
+                  // 优先消耗护盾
+                  const shieldDamage = Math.min(currentShield, actualDamage)
+                  player.shield = Math.max(0, currentShield - shieldDamage)
+                  actualDamage -= shieldDamage
+                  
+                  // 护盾被攻击的特效（青色）
+                  this.addHitEffect(this.playerX, this.playerY, false, '#00ffff')
+                  
+                  // 如果护盾被完全破坏
+                  if (player.shield <= 0) {
+                    // 护盾破坏特效
+                    this.effectsSystem.createParticleEffect('magic_burst', this.playerX, this.playerY, {
+                      count: 30,
+                      colors: ['#00ffff', '#88ffff', '#ffffff'],
+                      size: { min: 4, max: 10 },
+                      speed: { min: 2, max: 6 },
+                      life: { min: 400, max: 800 },
+                      spread: 360,
+                      fadeOut: true
+                    })
+                  }
+                }
+                
+                // 受伤时获得临时护盾（如果护盾已耗尽或不存在）
+                if (player.shield <= 0) {
+                  const tempShieldAmount = 10 + this.currentLevel * 2 // 基础10点，每层+2点
+                  const maxTempShield = 50 + this.currentLevel * 5 // 最大护盾值
+                  
+                  if (!player.maxShield) {
+                    player.maxShield = maxTempShield
+                  }
+                  
+                  player.shield = Math.min(tempShieldAmount, maxTempShield)
+                  
+                  // **新增**：临时护盾获得特效（青色光环）
+                  this.effectsSystem.createParticleEffect('magic_burst', this.playerX, this.playerY, {
+                    count: 40,
+                    colors: ['#00ffff', '#88ffff', '#ffffff', '#aaffff'],
+                    size: { min: 6, max: 12 },
+                    speed: { min: 1, max: 3 },
+                    life: { min: 600, max: 1200 },
+                    spread: 360,
+                    fadeOut: true
+                  })
+                  
+                  // 添加屏幕消息提示
+                  this.addScreenMessage('临时护盾', `+${Math.ceil(player.shield)}`, '#00ffff', 2000)
+                }
+              }
+              
+              this.playerHealth -= actualDamage
               
               if (this.playerHealth <= 0) {
                 this.playerHealth = 0
@@ -3130,39 +5166,51 @@ export class TestGameEngine {
               // 应用远程伤害专用无敌帧（很短暂）
               this.playerProjectileIFrameUntil = now + projectileIFrameDuration
               // 注意：远程伤害不添加到playerDamageHistory，因为堆叠上限只针对接触伤害
-              this.addHitEffect(this.playerX, this.playerY, false)
+              if (!hasTempShield || actualDamage > 0) {
+                this.addHitEffect(this.playerX, this.playerY, false)
+              }
               
               // 播放玩家受击音效
               this.audioSystem.playSoundEffect('player_hit', { volume: 0.7 })
               
               // 击中玩家后移除
               projectile.life = 0
-              return // 提前返回，避免继续处理
-            } else {
-              console.log(`⚠️ 玩家处于远程伤害无敌帧，剩余无敌时间: ${this.playerProjectileIFrameUntil - now}ms`)
+              continue // 继续处理下一个投射物
             }
           }
         }
       }
-    })
+    }
 
-    // **性能优化**：批量移除投射物，使用反向遍历避免索引问题
-    for (let i = this.projectiles.length - 1; i >= 0; i--) {
+    // **关键修复**：批量移除投射物，使用反向遍历避免索引问题，限制处理数量
+    // **性能优化**：最后20秒时更激进的清理策略
+    const timeRemainingColl = this.gameTime
+    const isNearEndColl = timeRemainingColl < 20
+    const maxProjectilesToCheck = isNearEndColl 
+      ? Math.min(this.projectiles.length, 100)  // 最后20秒检查100个（从60提高到100，减少卡顿）
+      : Math.min(this.projectiles.length, 150)  // 正常时检查150个
+    
+    for (let i = maxProjectilesToCheck - 1; i >= 0; i--) {
       const projectile = this.projectiles[i]
+      if (!projectile) continue
       if (projectile.life <= 0 || 
-          projectile.x < 0 || projectile.x > this.canvas.width ||
-          projectile.y < 0 || projectile.y > this.canvas.height) {
+          projectile.x < -100 || projectile.x > this.canvas.width + 100 ||
+          projectile.y < -100 || projectile.y > this.canvas.height + 100) {
         this.projectiles.splice(i, 1)
       }
     }
     
     // **性能优化**：限制最大投射物数量，防止卡顿
-    if (this.projectiles.length > this.MAX_PROJECTILES) {
+    // **关键修复**：最后20秒时适度清理（不要过度优化导致卡顿）
+    const maxAllowed = isNearEndColl 
+      ? Math.floor(this.MAX_PROJECTILES * 0.6)  // 最后20秒允许60%上限（从40%提高到60%，减少卡顿）
+      : this.MAX_PROJECTILES
+    
+    if (this.projectiles.length > maxAllowed) {
       // 移除最旧的投射物（前面的）
-      this.projectiles.splice(0, this.projectiles.length - this.MAX_PROJECTILES)
+      this.projectiles.splice(0, this.projectiles.length - maxAllowed)
     }
   }
-
   private handleAutoAttack() {
     // 获取玩家攻击速度属性
     const player = this.gameState?.player || { attackSpeed: 1.0, range: 400 }
@@ -3189,19 +5237,23 @@ export class TestGameEngine {
     
     // **新增：检查是否有敌人在攻击射程内**
     // **性能优化**：使用平方距离避免Math.sqrt
-    const attackRange = (player.range || 1) * 300 // range属性放大：1 = 300像素，2 = 600像素，以此类推
-    const attackRangeSq = attackRange * attackRange
-    const enemiesInRange = this.enemies.filter(enemy => {
+    const baseRange = (player.range || 1) * 300
+    let attackRange = baseRange
+    let attackRangeSq = attackRange * attackRange
+    let enemiesInRange = this.enemies.filter(enemy => {
       const dx = enemy.x - this.playerX
       const dy = enemy.y - this.playerY
       const distanceSq = dx * dx + dy * dy
       return distanceSq <= attackRangeSq
     })
-    
-    // 如果没有任何敌人在射程内，不攻击
+
+    // 不扩展射程：射程外不攻击
     if (enemiesInRange.length === 0) {
-      return // 不重置计时器，保持攻击节奏
+      this.currentAttackRangeSq = attackRangeSq
+      return
     }
+
+    this.currentAttackRangeSq = attackRangeSq
     
     // 检查是否到了攻击时间
     if (now - this.lastAttackTime >= attackInterval) {
@@ -3231,8 +5283,7 @@ export class TestGameEngine {
 
     // **新增：只考虑射程内的敌人**
     // **性能优化**：使用平方距离避免Math.sqrt，并在计算时就过滤
-    const attackRange = (player.range || 1) * 300 // 射程：range属性 * 300像素
-    const attackRangeSq = attackRange * attackRange
+    const attackRangeSq = this.currentAttackRangeSq || Math.pow((player.range || 1) * 300, 2)
     const enemyDistances = this.enemies
       .map((enemy, index) => {
         const dx = enemy.x - this.playerX
@@ -3258,13 +5309,25 @@ export class TestGameEngine {
     
     // **修复**：根据 player.projectiles 属性发射多个投射物
     // 注意：playerAngle已经更新为朝向最近敌人的方向
-    // **性能优化**：如果投射物数量过多，不创建新投射物
-    const projectileCount = player.projectiles || 1
-    const remainingSlots = this.MAX_PROJECTILES - this.projectiles.length
-    const actualProjectileCount = Math.min(projectileCount, remainingSlots)
+    // **关键修复**：确保攻击能够正常发出，即使投射物数量较多
+    const projectileCount = Math.max(1, player.projectiles || 1)
+    let remainingSlots = this.MAX_PROJECTILES - this.projectiles.length
+    
+    // **关键修复**：如果投射物数量过多，清理最旧的投射物，但确保至少能发射1个
+    if (remainingSlots < projectileCount && this.projectiles.length > 0) {
+      const needToRemove = projectileCount - remainingSlots
+      const removeCount = Math.min(needToRemove, this.projectiles.length)
+      // 只移除最旧的投射物（从数组开头移除）
+      this.projectiles.splice(0, removeCount)
+      remainingSlots = this.MAX_PROJECTILES - this.projectiles.length
+    }
+    
+    // **关键修复**：确保至少能发射1个投射物，即使投射物数量较多
+    const actualProjectileCount = Math.min(projectileCount, Math.max(remainingSlots, 1))
     
     if (actualProjectileCount <= 0) {
-      return // 如果投射物太多，跳过这次攻击
+      console.warn('⚠️ 无法发射投射物：投射物数量过多')
+      return // 如果投射物太多且无法清理，跳过这次攻击
     }
     
     // **修复**：始终基于playerAngle（枪口朝向）计算子弹速度
@@ -3287,9 +5350,45 @@ export class TestGameEngine {
       spreadAngle = Math.min(spreadAngle, 1.2) // 最大分散角度限制在约69度
     }
     
-    const angleStep = actualProjectileCount > 1 ? spreadAngle / (actualProjectileCount - 1) : 0
-    // **关键修复**：确保中心对准最近敌人，而不是分散在两侧
-    const startAngle = baseAngle - spreadAngle / 2
+    const halfSpread = spreadAngle / 2
+    const pairCount = Math.floor(actualProjectileCount / 2)
+    const angleStep = pairCount > 0 ? halfSpread / pairCount : 0
+    const angles: number[] = [baseAngle]
+
+    if (actualProjectileCount > 1) {
+      const desiredLength = actualProjectileCount + (actualProjectileCount % 2 === 0 ? 1 : 0)
+
+      for (let i = 1; angles.length < desiredLength; i++) {
+        const offset = angleStep * i
+        angles.push(baseAngle - offset)
+        if (angles.length >= desiredLength) break
+        angles.push(baseAngle + offset)
+      }
+
+      angles.sort((a, b) => a - b)
+
+      if (actualProjectileCount % 2 === 0) {
+        const removeIndex = this.multiShotPhase % 2 === 0 ? 0 : angles.length - 1
+        angles.splice(removeIndex, 1)
+        this.multiShotPhase = (this.multiShotPhase + 1) % 2
+      } else if (angles.length > actualProjectileCount) {
+        const excess = angles.length - actualProjectileCount
+        if (excess === 1) {
+          angles.splice(Math.floor(angles.length / 2), 1)
+        } else if (excess > 1) {
+          const trimStart = Math.floor(excess / 2)
+          angles.splice(0, trimStart)
+          while (angles.length > actualProjectileCount) {
+            angles.pop()
+          }
+        }
+        this.multiShotPhase = 0
+      } else {
+        this.multiShotPhase = 0
+      }
+    } else {
+      this.multiShotPhase = 0
+    }
     
     // 计算暴击和伤害（所有投射物使用相同的暴击结果，保持一致性）
     const isCrit = Math.random() < player.critChance
@@ -3302,12 +5401,8 @@ export class TestGameEngine {
     })
     
     // **修复**：根据投射物数量发射多个投射物，扇形分布
-    for (let i = 0; i < actualProjectileCount; i++) {
-      // 计算当前投射物的角度（如果只有一个投射物，角度就是baseAngle）
-      const currentAngle = actualProjectileCount === 1 
-        ? baseAngle 
-        : startAngle + (angleStep * i)
-      
+    for (let i = 0; i < angles.length; i++) {
+      const currentAngle = angles[i]
       const vx = Math.cos(currentAngle) * speed
       const vy = Math.sin(currentAngle) * speed
       
@@ -3342,9 +5437,12 @@ export class TestGameEngine {
 
   // 更新掉落物（治疗球完全静止，不模拟任何物理效果）
   private updateDroppedItems() {
-    // 治疗球在生成位置完全静止，不进行任何移动
-    // 平面游戏，不需要物理效果
-    this.droppedItems.forEach((item) => {
+    // **性能优化**：使用传统for循环，限制处理数量
+    const maxItems = Math.min(this.droppedItems.length, 100)
+    for (let i = 0; i < maxItems; i++) {
+      const item = this.droppedItems[i]
+      if (!item) continue
+      
       // 确保治疗球完全静止
       if (item.type === 'heal_orb') {
         item.vx = 0
@@ -3352,20 +5450,27 @@ export class TestGameEngine {
         item.attractedToPlayer = false
         // 不更新位置，保持在生成时的位置不变
       }
-    })
+    }
   }
 
   // 检查掉落物拾取
+  // **关键性能修复**：使用反向遍历避免splice导致的索引问题，限制检查数量
   private checkItemPickup() {
-    this.droppedItems.forEach((item, index) => {
-      // 计算与玩家的距离
+    const maxItems = Math.min(this.droppedItems.length, 100)
+    const pickupRadiusSq = (20 + 12) * (20 + 12) // 玩家半径 + 最大掉落物大小，平方
+    
+    // 反向遍历，避免splice导致索引问题
+    for (let i = this.droppedItems.length - 1; i >= 0 && i >= this.droppedItems.length - maxItems; i--) {
+      const item = this.droppedItems[i]
+      if (!item) continue
+      
+      // 计算与玩家的距离（使用平方距离）
       const dx = this.playerX - item.x
       const dy = this.playerY - item.y
       const distSq = dx * dx + dy * dy
-      const pickupRadius = 20 + item.size // 拾取半径：玩家半径 + 掉落物大小
       
       // 如果玩家接触到掉落物
-      if (distSq < pickupRadius * pickupRadius) {
+      if (distSq < pickupRadiusSq) {
         // 根据掉落物类型处理
         switch (item.type) {
           case 'heal_orb': {
@@ -3373,9 +5478,9 @@ export class TestGameEngine {
             const healAmount = item.value
             this.playerHealth = Math.min(this.playerMaxHealth, this.playerHealth + healAmount)
             
-            // 添加拾取特效
+            // 添加拾取特效（限制粒子数量）
             this.effectsSystem.createParticleEffect('heal_sparkles', item.x, item.y, {
-              count: 20,
+              count: 15, // 从20降到15
               colors: ['#00ff00', '#88ff88', '#ffffff', '#44ff44'],
               size: { min: 3, max: 6 },
               speed: { min: 50, max: 120 },
@@ -3400,53 +5505,80 @@ export class TestGameEngine {
           }
         }
         
-        // 移除已拾取的掉落物
-        this.droppedItems.splice(index, 1)
+        // 移除已拾取的掉落物（反向遍历，安全删除）
+        this.droppedItems.splice(i, 1)
       }
-    })
+    }
   }
 
   private updateEffects() {
-    this.effects.forEach((effect, index) => {
+    // **关键性能修复**：使用反向遍历和in-place删除，避免filter创建新数组
+    // 限制特效数量，防止累积
+    const maxEffects = 200
+    if (this.effects.length > maxEffects) {
+      // 如果超过限制，删除最旧的
+      this.effects.splice(0, this.effects.length - maxEffects)
+    }
+    
+    // 反向遍历更新和删除
+    for (let i = this.effects.length - 1; i >= 0; i--) {
+      const effect = this.effects[i]
+      if (!effect) {
+        this.effects.splice(i, 1)
+        continue
+      }
+      
       effect.life--
       effect.size += 0.5 // 特效逐渐变大
-    })
-
-    // 移除生命结束的特效
-    this.effects = this.effects.filter(effect => effect.life > 0)
+      
+      // 移除生命结束的特效
+      if (effect.life <= 0) {
+        this.effects.splice(i, 1)
+      }
+    }
   }
 
   private addHitEffect(x: number, y: number, isCrit: boolean, color?: string) {
-    // 旧的简单特效（保持兼容性）
-    this.effects.push({
-      x,
-      y,
-      type: isCrit ? 'crit_hit' : 'hit',
-      life: 10,
-      size: 5
-    })
+    // **性能优化**：限制简单特效数量
+    if (this.effects.length < 200) {
+      // 旧的简单特效（保持兼容性）
+      this.effects.push({
+        x,
+        y,
+        type: isCrit ? 'crit_hit' : 'hit',
+        life: 10,
+        size: 5
+      })
+    }
     
     // 新的高级特效系统
     this.effectsSystem.createHitEffect(x, y, isCrit)
   }
 
   private addDeathEffect(x: number, y: number) {
-    // 旧的简单特效（保持兼容性）
-    this.effects.push({
-      x,
-      y,
-      type: 'death',
-      life: 20,
-      size: 10
-    })
+    // **性能优化**：限制简单特效数量
+    if (this.effects.length < 200) {
+      // 旧的简单特效（保持兼容性）
+      this.effects.push({
+        x,
+        y,
+        type: 'death',
+        life: 20,
+        size: 10
+      })
+    }
     
     // 新的高级特效系统
     this.effectsSystem.createDeathEffect(x, y, 'normal')
   }
 
   // 绘制掉落物
+  // **性能优化**：限制绘制数量，使用传统for循环
   private drawDroppedItems() {
-    this.droppedItems.forEach(item => {
+    const maxItems = Math.min(this.droppedItems.length, 100)
+    for (let i = 0; i < maxItems; i++) {
+      const item = this.droppedItems[i]
+      if (!item) continue
       this.ctx.save()
       
       // 根据掉落物类型绘制不同的外观
@@ -3517,7 +5649,224 @@ export class TestGameEngine {
       }
       
       this.ctx.restore()
-    })
+    }
+  }
+
+  // 绘制虫卵
+  private drawEggs() {
+    // **性能优化**：直接找到Boss，限制绘制数量，简化绘制逻辑
+    const hiveMother = this.enemies.find(e => e.type === 'fortress_guard')
+    if (!hiveMother) return
+    
+    const boss = hiveMother as any
+    const eggs = boss.pendingEggs
+    if (!eggs || !Array.isArray(eggs) || eggs.length === 0) return
+    
+    // **关键修复**：大幅减少绘制的虫卵数量，防止渲染卡顿
+    // 这是第10层卡死的原因之一：渲染太多虫卵导致性能问题
+    const maxEggsToDraw = 8 // 从10进一步减少到8，更严格防止渲染卡顿
+    const eggsToDraw = eggs.slice(0, maxEggsToDraw)
+    const now = Date.now()
+    
+    // **关键修复**：使用for循环替代forEach，性能更好
+    for (let i = 0; i < eggsToDraw.length; i++) {
+      const egg: any = eggsToDraw[i]
+      if (!egg) continue
+      
+      // **关键修复**：验证egg数据有效性，防止无效数据导致渲染错误
+      if (!egg.x || !egg.y || !isFinite(egg.x) || !isFinite(egg.y)) {
+        continue // 跳过无效的egg
+      }
+      
+      this.ctx.save()
+      this.ctx.translate(egg.x, egg.y)
+      
+      // **关键修复**：计算孵化进度，添加边界检查防止负数导致渲染错误
+      // 这是导致卡死的根本原因：负数半径导致Canvas渲染错误
+      let hatchProgress = 0
+      if (egg.hatchTime && egg.hatchTime > 0) {
+        const progress = (now - (egg.hatchTime - 2000)) / 2000
+        hatchProgress = Math.max(0, Math.min(1, progress)) // 确保在0-1范围内
+      }
+      const pulse = Math.max(0.5, Math.min(2, Math.sin(Date.now() / 400) * 0.15 + 1)) // 限制pulse范围
+      
+      // **关键修复**：虫卵大小计算，添加最小值保护，防止负数或过小的值
+      const eggWidth = Math.max(5, 16 + hatchProgress * 6) // 最小5像素
+      const eggHeight = Math.max(5, 20 + hatchProgress * 8) // 最小5像素
+      
+      // **关键修复**：外圈暗色光晕，添加边界检查，防止负数半径
+      const gradientRadius = Math.max(5, eggHeight * 2) // 确保半径是正数
+      const gradient = this.ctx.createRadialGradient(0, 0, 0, 0, 0, gradientRadius)
+      gradient.addColorStop(0, `rgba(136, 68, 0, ${0.6 * (1 - hatchProgress * 0.3)})`)  // 棕色
+      gradient.addColorStop(0.3, `rgba(57, 255, 20, ${0.4 * (1 - hatchProgress * 0.3)})`)  // 暗绿色
+      gradient.addColorStop(0.7, `rgba(0, 136, 68, ${0.2 * (1 - hatchProgress * 0.3)})`)
+      gradient.addColorStop(1, 'rgba(136, 68, 0, 0)')
+      this.ctx.fillStyle = gradient
+      this.ctx.beginPath()
+      // **关键修复**：确保所有半径都是正数
+      const outerWidth = Math.max(1, eggWidth * 1.8 * pulse)
+      const outerHeight = Math.max(1, eggHeight * 1.8 * pulse)
+      if (outerWidth > 0 && outerHeight > 0 && isFinite(outerWidth) && isFinite(outerHeight)) {
+        this.ctx.ellipse(0, 0, outerWidth, outerHeight, 0, 0, Math.PI * 2)
+        this.ctx.fill()
+      }
+      
+      // **关键修复**：虫卵主体，添加边界检查，防止负数半径
+      // 基础色：深棕色/暗绿色混合
+      const mainGradientRadius = Math.max(5, Math.max(eggWidth, eggHeight))
+      const mainGradient = this.ctx.createRadialGradient(
+        -eggWidth * 0.15, -eggHeight * 0.25, 0,
+        0, 0, mainGradientRadius
+      )
+      mainGradient.addColorStop(0, '#4a4a2a')  // 深棕色
+      mainGradient.addColorStop(0.2, '#6b6b3a')  // 中棕色
+      mainGradient.addColorStop(0.5, '#2d5a2d')  // 暗绿色
+      mainGradient.addColorStop(0.8, '#1a3a1a')  // 深绿色
+      mainGradient.addColorStop(1, '#0a1a0a')  // 几乎黑色
+      this.ctx.fillStyle = mainGradient
+      this.ctx.beginPath()
+      // **关键修复**：确保所有半径都是正数
+      const mainWidth = Math.max(1, eggWidth * pulse)
+      const mainHeight = Math.max(1, eggHeight * pulse)
+      if (mainWidth > 0 && mainHeight > 0 && isFinite(mainWidth) && isFinite(mainHeight)) {
+        this.ctx.ellipse(0, 0, mainWidth, mainHeight, 0, 0, Math.PI * 2)
+        this.ctx.fill()
+      }
+      
+      // **关键修复**：虫卵外壳纹理，添加严格的边界检查，防止负数半径
+      this.ctx.fillStyle = `rgba(34, 68, 34, ${0.8 * (1 - hatchProgress)})`
+      // **性能优化**：从5个斑点减少到2个
+      const seed = Math.floor(Math.abs(egg.x * 100 + egg.y * 100)) // 确保seed是正数
+      for (let j = 0; j < 2; j++) {
+        // **关键修复**：确保pseudoRandom在0-1范围内，防止负数
+        const sinValue = Math.sin(seed + j * 100) * 10000
+        const pseudoRandom = Math.abs((sinValue % 1 + 1) % 1) // 确保是正数
+        const spotX = (Math.sin(j * 1.2) * eggWidth * 0.4)
+        const spotY = (Math.cos(j * 1.2) * eggHeight * 0.4)
+        // **关键修复**：确保spotSize是正数且不会太小
+        const spotSize = Math.max(1, eggWidth * (0.08 + pseudoRandom * 0.1)) // 最小1像素
+        // **关键修复**：检查所有值都是有效的正数
+        if (spotSize > 0 && isFinite(spotSize) && isFinite(spotX) && isFinite(spotY)) {
+          this.ctx.beginPath()
+          this.ctx.ellipse(spotX, spotY, spotSize, Math.max(1, spotSize * 1.2), j * 0.3, 0, Math.PI * 2)
+          this.ctx.fill()
+        }
+      }
+      
+      // **关键修复**：虫卵裂纹，添加边界检查
+      if (hatchProgress > 0.5 && eggWidth > 0 && eggHeight > 0) {
+        const crackAlpha = Math.max(0, Math.min(1, (hatchProgress - 0.5) * 2))  // 确保在0-1范围内
+        this.ctx.strokeStyle = `rgba(255, 100, 0, ${crackAlpha * 0.8})`
+        this.ctx.lineWidth = 2
+        this.ctx.beginPath()
+        // 绘制几条裂纹，确保坐标有效
+        const x1 = -eggWidth * 0.3
+        const y1 = -eggHeight * 0.2
+        const x2 = eggWidth * 0.2
+        const y2 = eggHeight * 0.3
+        const x3 = eggWidth * 0.3
+        const y3 = -eggHeight * 0.1
+        const x4 = -eggWidth * 0.1
+        const y4 = eggHeight * 0.4
+        if (isFinite(x1) && isFinite(y1) && isFinite(x2) && isFinite(y2) &&
+            isFinite(x3) && isFinite(y3) && isFinite(x4) && isFinite(y4)) {
+          this.ctx.moveTo(x1, y1)
+          this.ctx.lineTo(x2, y2)
+          this.ctx.moveTo(x3, y3)
+          this.ctx.lineTo(x4, y4)
+          this.ctx.stroke()
+        }
+      }
+      
+      // **关键修复**：内部发光，添加边界检查
+      if (eggWidth > 0 && eggHeight > 0) {
+        this.ctx.fillStyle = `rgba(0, 136, 68, ${0.4 * (1 - hatchProgress * 0.5)})`
+        this.ctx.beginPath()
+        const innerWidth = Math.max(1, eggWidth * 0.6)
+        const innerHeight = Math.max(1, eggHeight * 0.5)
+        const innerY = eggHeight * 0.1
+        if (innerWidth > 0 && innerHeight > 0 && isFinite(innerWidth) && isFinite(innerHeight) && isFinite(innerY)) {
+          this.ctx.ellipse(0, innerY, innerWidth, innerHeight, 0, 0, Math.PI * 2)
+          this.ctx.fill()
+        }
+      }
+      
+      // **关键修复**：高光，添加边界检查
+      if (eggWidth > 0 && eggHeight > 0) {
+        this.ctx.fillStyle = `rgba(136, 136, 100, ${0.5 * (1 - hatchProgress)})`
+        this.ctx.beginPath()
+        const highlightWidth = Math.max(1, eggWidth * 0.3)
+        const highlightHeight = Math.max(1, eggHeight * 0.25)
+        const highlightX = -eggWidth * 0.25
+        const highlightY = -eggHeight * 0.35
+        if (highlightWidth > 0 && highlightHeight > 0 && 
+            isFinite(highlightWidth) && isFinite(highlightHeight) && 
+            isFinite(highlightX) && isFinite(highlightY)) {
+          this.ctx.ellipse(highlightX, highlightY, highlightWidth, highlightHeight, 0, 0, Math.PI * 2)
+          this.ctx.fill()
+        }
+      }
+      
+      // **关键修复**：孵化进度指示，添加边界检查
+      if (hatchProgress > 0.7 && eggWidth > 0 && eggHeight > 0) {
+        const flash = Math.sin(Date.now() / 100) > 0
+        if (flash) {
+          this.ctx.strokeStyle = '#ff4400'
+          this.ctx.lineWidth = 4
+          this.ctx.setLineDash([8, 4])
+          this.ctx.beginPath()
+          const warningWidth = Math.max(1, eggWidth * 1.4)
+          const warningHeight = Math.max(1, eggHeight * 1.6)
+          if (warningWidth > 0 && warningHeight > 0 && isFinite(warningWidth) && isFinite(warningHeight)) {
+            this.ctx.ellipse(0, 0, warningWidth, warningHeight, 0, 0, Math.PI * 2)
+            this.ctx.stroke()
+          }
+          this.ctx.setLineDash([])
+        }
+      }
+      
+      this.ctx.restore()
+    }
+    
+    // 绘制风暴区域（虫群风暴技能）
+    if (boss.stormZones && Array.isArray(boss.stormZones) && boss.stormZones.length > 0) {
+      const now = Date.now()
+      // 限制绘制的风暴区域数量
+      const maxZonesToDraw = 5
+      const zonesToDraw = boss.stormZones.slice(0, maxZonesToDraw)
+      
+      zonesToDraw.forEach((zone: any) => {
+            if (!zone) return
+            const remainingTime = zone.duration - (now - zone.startTime)
+            if (remainingTime <= 0) return
+            
+            const alpha = Math.min(0.3, remainingTime / zone.duration * 0.5)
+            const pulse = Math.sin(Date.now() / 400) * 0.1 + 1
+            
+            this.ctx.save()
+            
+            // 风暴区域外圈
+            const stormGradient = this.ctx.createRadialGradient(zone.x, zone.y, 0, zone.x, zone.y, zone.radius * pulse)
+            stormGradient.addColorStop(0, `rgba(57, 255, 20, ${alpha})`)
+            stormGradient.addColorStop(0.5, `rgba(0, 255, 136, ${alpha * 0.6})`)
+            stormGradient.addColorStop(1, 'rgba(57, 255, 20, 0)')
+            this.ctx.fillStyle = stormGradient
+            this.ctx.beginPath()
+            this.ctx.arc(zone.x, zone.y, zone.radius * pulse, 0, Math.PI * 2)
+            this.ctx.fill()
+            
+            // 风暴区域边界
+            this.ctx.strokeStyle = `rgba(57, 255, 20, ${alpha * 2})`
+            this.ctx.lineWidth = 2
+            this.ctx.setLineDash([5, 5])
+            this.ctx.beginPath()
+            this.ctx.arc(zone.x, zone.y, zone.radius * pulse, 0, Math.PI * 2)
+            this.ctx.stroke()
+            this.ctx.setLineDash([])
+            
+            this.ctx.restore()
+          })
+    }
   }
 
   private drawEffects() {
@@ -3619,6 +5968,48 @@ export class TestGameEngine {
     })
   }
 
+  // **新增**：绘制治疗轨迹区域
+  private drawHealTrailAreas() {
+    for (const area of this.healTrailAreas) {
+      const lifePercent = area.life / area.maxLife
+      const alpha = lifePercent * 0.3 // 透明度随生命值衰减
+      
+      // 绘制治疗区域（绿色半透明圆形）
+      this.ctx.save()
+      this.ctx.globalAlpha = alpha
+      
+      // 外圈（淡绿色）
+      const gradient = this.ctx.createRadialGradient(area.x, area.y, 0, area.x, area.y, area.radius)
+      gradient.addColorStop(0, 'rgba(0, 255, 136, 0.4)')
+      gradient.addColorStop(0.5, 'rgba(0, 255, 170, 0.2)')
+      gradient.addColorStop(1, 'rgba(0, 255, 136, 0)')
+      
+      this.ctx.fillStyle = gradient
+      this.ctx.beginPath()
+      this.ctx.arc(area.x, area.y, area.radius, 0, Math.PI * 2)
+      this.ctx.fill()
+      
+      // 内圈（更亮的绿色）
+      const innerGradient = this.ctx.createRadialGradient(area.x, area.y, 0, area.x, area.y, area.radius * 0.5)
+      innerGradient.addColorStop(0, 'rgba(0, 255, 170, 0.6)')
+      innerGradient.addColorStop(1, 'rgba(0, 255, 136, 0)')
+      
+      this.ctx.fillStyle = innerGradient
+      this.ctx.beginPath()
+      this.ctx.arc(area.x, area.y, area.radius * 0.5, 0, Math.PI * 2)
+      this.ctx.fill()
+      
+      // 边框（绿色）
+      this.ctx.strokeStyle = `rgba(0, 255, 136, ${alpha * 0.8})`
+      this.ctx.lineWidth = 2
+      this.ctx.beginPath()
+      this.ctx.arc(area.x, area.y, area.radius, 0, Math.PI * 2)
+      this.ctx.stroke()
+      
+      this.ctx.restore()
+    }
+  }
+
   private render() {
     // 清空画布
     this.ctx.fillStyle = '#1a1a1a'
@@ -3629,17 +6020,29 @@ export class TestGameEngine {
     this.effectsSystem.applyScreenEffects(this.ctx, this.canvas)
 
     // 绘制敌人（使用新的视觉系统）
-    // **性能优化**：只渲染屏幕内的敌人，添加边距以支持拖尾效果
+    // **关键修复**：只渲染屏幕内的敌人，大幅限制绘制数量防止卡死
     const margin = 100 // 渲染边距，确保拖尾效果可见
     const minX = -margin
     const maxX = this.canvas.width + margin
     const minY = -margin
     const maxY = this.canvas.height + margin
     
-    // 使用传统for循环代替forEach，性能更好
+    // **关键修复**：限制绘制的敌人数量，防止渲染卡顿
     const enemyCount = this.enemies.length
-    for (let i = 0; i < enemyCount; i++) {
+    // **性能优化**：根据敌人数量动态限制绘制数量
+    let maxEnemiesToDraw: number
+    if (enemyCount > 60) {
+      maxEnemiesToDraw = Math.min(enemyCount, 50) // 敌人很多时只绘制50个（从60降低到50）
+    } else if (enemyCount > 40) {
+      maxEnemiesToDraw = Math.min(enemyCount, 55) // 敌人中等时绘制55个
+    } else {
+      maxEnemiesToDraw = enemyCount // 敌人少时全部绘制
+    }
+    
+    // 使用传统for循环代替forEach，性能更好
+    for (let i = 0; i < maxEnemiesToDraw; i++) {
       const enemy = this.enemies[i]
+      if (!enemy) continue
       
       // **性能优化**：跳过屏幕外的敌人
       if (enemy.x < minX || enemy.x > maxX || enemy.y < minY || enemy.y > maxY) {
@@ -3683,27 +6086,19 @@ export class TestGameEngine {
         this.ctx.restore()
       }
       
-      // 添加中毒状态的视觉效果（绿色毒云）
-      const isPoisoned = enemyAny.statusEffects?.some((e: any) => e.id === 'poison' && e.duration > 0)
-      if (isPoisoned) {
-        // 在敌人周围创建持续的中毒粒子效果
-        if (!enemyAny.lastPoisonEffect || Date.now() - enemyAny.lastPoisonEffect > 200) {
-          this.effectsSystem.createParticleEffect('dust_cloud', enemy.x, enemy.y + enemy.size / 2, {
-            count: 3,
-            colors: ['#00ff00', '#44ff44', '#88ff88'],
-            size: { min: 2, max: 5 },
-            speed: { min: 10, max: 30 },
-            life: { min: 500, max: 1000 },
-            spread: 180,
-            gravity: -50
-          })
-          enemyAny.lastPoisonEffect = Date.now()
-        }
-      }
+      // **关键修复**：禁用中毒粒子效果，减少性能开销
+      // 中毒状态视觉效果已禁用，避免性能问题
+      // const isPoisoned = enemyAny.statusEffects?.some((e: any) => e.id === 'poison' && e.duration > 0)
+      // if (isPoisoned) {
+      //   // 在敌人周围创建持续的中毒粒子效果 - 已禁用
+      // }
       // **性能优化**：使用简单的ID，避免Date.now()调用
       this.enemyVisualSystem.drawEnemy(this.ctx, enemy.x, enemy.y, enemyOptions, `enemy_${i}`)
     }
 
+    // 绘制虫卵（在敌人之后，掉落物之前）
+    this.drawEggs()
+    
     // 绘制掉落物（在敌人之后，投射物之前）
     this.drawDroppedItems()
 
@@ -3711,10 +6106,14 @@ export class TestGameEngine {
     this.projectileVisualSystem.drawTrails(this.ctx)
 
     // 绘制投射物（使用新的视觉系统）
-    // **性能优化**：只渲染屏幕内的投射物，使用传统for循环
+    // **关键修复**：大幅限制绘制的投射物数量，防止渲染卡顿
     const projectileCount = this.projectiles.length
-    for (let i = 0; i < projectileCount; i++) {
+    const maxProjectilesToDraw = Math.min(projectileCount, 100) // 最多绘制100个投射物
+    
+    // 使用传统for循环代替forEach，性能更好
+    for (let i = 0; i < maxProjectilesToDraw; i++) {
       const projectile = this.projectiles[i]
+      if (!projectile) continue
       
       // **性能优化**：跳过屏幕外的投射物
       if (projectile.x < minX || projectile.x > maxX || projectile.y < minY || projectile.y > maxY) {
@@ -3754,6 +6153,7 @@ export class TestGameEngine {
     }
 
     // 绘制玩家（使用新的视觉系统）
+    const player = this.gameState?.player as any
     const playerOptions = {
       health: this.playerHealth,
       maxHealth: this.playerMaxHealth,
@@ -3761,23 +6161,29 @@ export class TestGameEngine {
       skin: 'default',
       animationState: this.getPlayerAnimationState(),
       effects: this.getPlayerEffects(),
-      lastAttackTime: this.lastAttackTime  // 传递最后攻击时间
+      lastAttackTime: this.lastAttackTime,  // 传递最后攻击时间
+      weaponMode: player?.weaponMode  // 传递武器模式（形态大师）
     }
     this.visualRenderer.drawPlayer(this.ctx, this.playerX, this.playerY, this.playerAngle, playerOptions)
 
     // 取消技能预警机制：不再绘制预警图形
 
     // 绘制预警线（弓箭手和狙击手）
-    // **性能优化**：使用传统for循环，只检查屏幕内的敌人
-    for (let i = 0; i < enemyCount; i++) {
+    // **关键修复**：限制预警线检查数量，防止性能问题
+    const maxWarningLinesToCheck = Math.min(enemyCount, 15) // 最多检查15个敌人的预警线（从20降低到15）
+    for (let i = 0; i < maxWarningLinesToCheck; i++) {
       const enemy = this.enemies[i]
+      if (!enemy) continue
       // 只绘制屏幕内的预警线
       if (enemy.x >= minX && enemy.x <= maxX && enemy.y >= minY && enemy.y <= maxY) {
-        if (enemy.warningLine && (enemy.type === 'archer' || enemy.type === 'sniper')) {
+        if (enemy.warningLine && enemy.type === 'archer') {
           this.drawWarningLine(enemy)
         }
       }
     }
+
+    // **新增**：绘制治疗轨迹区域
+    this.drawHealTrailAreas()
 
     // 绘制粒子效果
     this.effectsSystem.drawParticleEffects(this.ctx)
@@ -3792,6 +6198,10 @@ export class TestGameEngine {
 
     // 绘制UI（不受屏幕效果影响）
     this.drawUI()
+    
+    // 绘制屏幕消息和武器模式指示器
+    this.drawScreenMessages()
+    this.drawWeaponModeIndicator()
   }
 
   // 绘制预警线
@@ -3879,19 +6289,6 @@ export class TestGameEngine {
       this.ctx.beginPath()
       this.ctx.arc(0, 0, enemy.size / 2, 0, Math.PI * 2)
       this.ctx.stroke()
-    } else if (enemy.type === 'sniper') {
-      // 狙击手：六边形
-        this.ctx.fillStyle = enemy.color
-        this.ctx.beginPath()
-      for (let i = 0; i < 6; i++) {
-        const angle = (Math.PI / 3) * i - Math.PI / 2
-        const x = Math.cos(angle) * enemy.size / 2
-        const y = Math.sin(angle) * enemy.size / 2
-        if (i === 0) this.ctx.moveTo(x, y)
-        else this.ctx.lineTo(x, y)
-      }
-        this.ctx.closePath()
-        this.ctx.fill()
     } else if (enemy.type === 'support') {
       // 支援者：圆形带装饰
       this.ctx.fillStyle = enemy.color
@@ -3993,7 +6390,6 @@ export class TestGameEngine {
       switch (enemy.type) {
         case 'charger': icon = '⚡'; break
         case 'heavy': icon = '🛡️'; break
-        case 'sniper': icon = '🎯'; break
         case 'support': icon = '✨'; break
         case 'fortress': icon = '🏰'; break
         case 'hunter': icon = '🐺'; break
@@ -4049,8 +6445,14 @@ export class TestGameEngine {
     // 显示分数
     this.ctx.fillText('分数: ' + this.getScore(), 120, 25)
     
+    // 显示金币（与分数一致增长，仅用于购买）
+    const gold = this.gameState?.player?.gold ?? 0
+    this.ctx.fillText('金币: ' + gold, 220, 25)
+    
     // 显示时间
-    this.ctx.fillText('时间: ' + Math.ceil(this.gameTime), 220, 25)
+    this.ctx.fillText('时间: ' + Math.ceil(this.gameTime), 320, 25)
+    
+    // 形态大师已删除：不再在HUD中显示其专属属性读数
     
     // 显示暂停状态
     if (this.isPaused) {
@@ -4125,7 +6527,6 @@ export class TestGameEngine {
   private getEnemyGlowColor(enemy: any): string {
     if ((enemy as any).isElite) return '#FFD700'
     if (enemy.type === 'archer') return '#ff8800'
-    if (enemy.type === 'sniper') return '#ff0000'
     if (enemy.type === 'healer') return '#00ff00'
     return enemy.color
   }
@@ -4205,6 +6606,25 @@ export class TestGameEngine {
     this.spawnEnemy()
   }
 
+  // **关键修复**：保存最高记录到本地存储
+  // 注意：数据库保存由GameView.vue中的updateGameState处理，这里只保存到本地存储
+  private saveHighestRecords() {
+    if (!this.gameState) return
+    
+    try {
+      // 保存到本地存储
+      const records = {
+        highestScore: this.gameState.highestScore || 0,
+        highestLevel: this.gameState.highestLevel || 0,
+        longestSurvival: this.gameState.timeRemaining || 0
+      }
+      localStorage.setItem('gameRecords', JSON.stringify(records))
+      console.log('✅ 已保存最高记录到本地存储:', records)
+    } catch (error) {
+      console.error('保存最高记录失败:', error)
+    }
+  }
+
   private triggerGameOver() {
     // 暂停游戏
     this.isPaused = true
@@ -4227,8 +6647,182 @@ export class TestGameEngine {
   handleKeyDown(key: string) {
     switch (key.toLowerCase()) {
       case 'p': case ' ': this.togglePause(); break
+      case 'q': case 'tab': 
+        // 形态大师：切换武器模式（按Q或Tab键）
+        this.toggleWeaponMode()
+        break
       // 被动属性选择现在由Vue组件系统处理，不再使用键盘数字键
     }
+  }
+  
+  // 切换武器模式（形态大师）
+  toggleWeaponMode() {
+    const player = this.gameState?.player as any
+    if (!player) return
+    
+    const bossExclusiveEffects = player.bossExclusiveEffects || []
+    if (!bossExclusiveEffects.includes('dual_weapon_modes')) {
+      return // 没有形态大师奖励，不处理
+    }
+    
+    // 初始化原始属性值（如果还没有保存）
+    if (player.baseDamage === undefined) {
+      player.baseDamage = player.damage || 10
+      player.baseAttackSpeed = player.attackSpeed || 1.0
+    }
+    
+    // 切换武器模式：0 = 高伤害模式，1 = 高攻速模式
+    if (player.weaponMode === undefined) player.weaponMode = 0
+    
+    const oldMode = player.weaponMode
+    player.weaponMode = player.weaponMode === 0 ? 1 : 0
+    
+    // 根据模式调整属性（基于原始值）
+    if (player.weaponMode === 0) {
+      // 模式0：高伤害模式（伤害+50%，攻速-30%）
+      player.damage = player.baseDamage * 1.5
+      player.attackSpeed = player.baseAttackSpeed * 0.7
+      console.log('切换到高伤害模式（伤害+50%，攻速-30%）')
+    } else {
+      // 模式1：高攻速模式（攻速+50%，伤害-20%）
+      player.attackSpeed = player.baseAttackSpeed * 1.5
+      player.damage = player.baseDamage * 0.8
+      console.log('切换到高攻速模式（攻速+50%，伤害-20%）')
+    }
+    
+    // **关键修复**：强制同步到gameState，确保UI能读取到最新值
+    if (this.gameState && this.gameState.player) {
+      // 直接修改gameState.player的属性
+      const gameStatePlayer = this.gameState.player as any
+      gameStatePlayer.damage = player.damage
+      gameStatePlayer.attackSpeed = player.attackSpeed
+      gameStatePlayer.weaponMode = player.weaponMode
+      
+      // 确保player对象本身也更新（双重保险）
+      player.damage = player.damage
+      player.attackSpeed = player.attackSpeed
+      player.weaponMode = player.weaponMode
+      
+      console.log(`[模式切换] 已同步到gameState: weaponMode=${player.weaponMode}, damage=${player.damage}, attackSpeed=${player.attackSpeed}`)
+      
+      // 触发响应式更新（如果使用Vue）
+      if ((this.gameState as any).__ob__) {
+        (this.gameState as any).__ob__.dep.notify()
+      }
+    }
+    
+    // 添加切换特效（增强版）
+    this.effectsSystem.createParticleEffect('magic_burst', this.playerX, this.playerY, {
+      count: 50,
+      spread: 360,
+      speed: { min: 3, max: 8 },
+      size: { min: 5, max: 12 },
+      life: { min: 400, max: 800 },
+      colors: player.weaponMode === 0 ? ['#FF0000', '#FF6600', '#FFAA00'] : ['#00AAFF', '#00FF88', '#88FFFF'],
+      fadeOut: true
+    })
+    
+    // 添加屏幕提示
+    const modeName = player.weaponMode === 0 ? '高伤害模式' : '高攻速模式'
+    const modeDesc = player.weaponMode === 0 ? '伤害+50%，攻速-30%' : '攻速+50%，伤害-20%'
+    this.addScreenMessage(modeName, modeDesc, player.weaponMode === 0 ? '#FF6600' : '#00AAFF', 2000)
+  }
+  
+  // 添加屏幕消息提示
+  private screenMessages: Array<{ text: string, desc: string, color: string, life: number, y: number }> = []
+  
+  private addScreenMessage(text: string, desc: string, color: string, duration: number = 2000) {
+    this.screenMessages.push({
+      text,
+      desc,
+      color,
+      life: duration,
+      y: this.canvas.height / 2 - 50
+    })
+  }
+  
+  private updateScreenMessages(deltaTime: number) {
+    for (let i = this.screenMessages.length - 1; i >= 0; i--) {
+      const msg = this.screenMessages[i]
+      msg.life -= deltaTime
+      if (msg.life <= 0) {
+        this.screenMessages.splice(i, 1)
+      }
+    }
+  }
+  
+  private drawScreenMessages() {
+    this.screenMessages.forEach((msg, index) => {
+      const alpha = Math.min(1, msg.life / 500) // 淡出效果
+      const y = msg.y - index * 60
+      
+      // 背景
+      this.ctx.fillStyle = `rgba(0, 0, 0, ${0.7 * alpha})`
+      this.ctx.fillRect(
+        this.canvas.width / 2 - 150,
+        y - 25,
+        300,
+        50
+      )
+      
+      // 文字
+      this.ctx.fillStyle = msg.color
+      this.ctx.font = 'bold 24px Arial'
+      this.ctx.textAlign = 'center'
+      this.ctx.textBaseline = 'middle'
+      this.ctx.shadowColor = 'rgba(0, 0, 0, 0.8)'
+      this.ctx.shadowBlur = 4
+      this.ctx.fillText(msg.text, this.canvas.width / 2, y - 5)
+      
+      // 描述
+      this.ctx.fillStyle = `rgba(255, 255, 255, ${alpha})`
+      this.ctx.font = '16px Arial'
+      this.ctx.fillText(msg.desc, this.canvas.width / 2, y + 15)
+      this.ctx.shadowBlur = 0
+    })
+  }
+  // 绘制当前武器模式指示器（持续显示）
+  private drawWeaponModeIndicator() {
+    // **修复**：直接从gameState读取，确保获取最新值
+    const player = this.gameState?.player as any
+    if (!player || !player.bossExclusiveEffects?.includes('dual_weapon_modes')) {
+      return
+    }
+    
+    // **修复**：确保读取最新的weaponMode值，如果未定义则默认为0
+    // **关键修复**：强制从player对象读取，确保获取最新值
+    const weaponMode = (player.weaponMode !== undefined && player.weaponMode !== null) ? player.weaponMode : 0
+    const modeName = weaponMode === 0 ? '高伤害模式' : '高攻速模式'
+    const modeDesc = weaponMode === 0 ? '伤害+50% 攻速-30%' : '攻速+50% 伤害-20%'
+    const modeColor = weaponMode === 0 ? '#FF6600' : '#00AAFF'
+    
+    // **修复**：调整位置，避免和按钮重叠
+    // 按钮在右上角（right: 20px, top: 20px），指示器放在右上角下方，避免重叠
+    // 按钮区域大约在右上角 20-80px 高度，指示器放在 100px 以下
+    const x = this.canvas.width - 210
+    const y = 100  // 放在按钮下方，避免重叠
+    
+    // 背景框
+    this.ctx.fillStyle = 'rgba(0, 0, 0, 0.7)'
+    this.ctx.fillRect(x - 10, y - 30, 190, 60)
+    this.ctx.strokeStyle = modeColor
+    this.ctx.lineWidth = 2
+    this.ctx.strokeRect(x - 10, y - 30, 190, 60)
+    
+    // 模式名称
+    this.ctx.fillStyle = modeColor
+    this.ctx.font = 'bold 18px Arial'
+    this.ctx.textAlign = 'left'
+    this.ctx.textBaseline = 'top'
+    this.ctx.shadowColor = 'rgba(0, 0, 0, 0.8)'
+    this.ctx.shadowBlur = 4
+    this.ctx.fillText('⚔️ ' + modeName, x, y - 5)
+    
+    // 模式描述
+    this.ctx.fillStyle = 'rgba(255, 255, 255, 0.9)'
+    this.ctx.font = '14px Arial'
+    this.ctx.fillText(modeDesc, x, y + 20)
+    this.ctx.shadowBlur = 0
   }
 
   // 暂停/继续游戏
@@ -4295,43 +6889,132 @@ export class TestGameEngine {
   }
 
   // 更新玩家移动
-  private updatePlayerMovement() {
+  private updatePlayerMovement(deltaTime?: number) {
     // 保存上一帧位置（用于计算移动方向，供phantom背刺检测使用）
     this.playerLastX = this.playerX
     this.playerLastY = this.playerY
     
     // 从gameState获取移动速度
     // **修复**：确保moveSpeed不会因为undefined或0而被重置
-    const baseMoveSpeed = 2.0 // 基础移动速度
+    const baseMoveSpeedPerSecond = 360 // 进一步提升基础移动速度（像素/秒），显著更快
     const moveSpeedMultiplier = this.gameState?.player?.moveSpeed ?? 1.0 // 默认1.0（100%），如果未定义或无效则使用1.0
-    const moveSpeed = baseMoveSpeed * moveSpeedMultiplier
+    const moveSpeed = baseMoveSpeedPerSecond * moveSpeedMultiplier
     
     // **调试**：如果moveSpeed异常，输出日志
     if (moveSpeedMultiplier < 0.5 || moveSpeedMultiplier > 2.0) {
       console.warn(`⚠️ 异常移动速度倍数: ${moveSpeedMultiplier}, 当前关卡: ${this.currentLevel}`)
     }
     
-    if (this.keys['w'] || this.keys['arrowup']) {
-      this.playerY -= moveSpeed
+    // 限制dt范围，避免极端帧时间影响；不再做EMA，减少输入延迟
+    let dt = (deltaTime ?? 16.67) / 1000
+    dt = Math.max(0.005, Math.min(0.05, dt))
+    
+    // 读取输入方向
+    let inputX = 0
+    let inputY = 0
+    if (this.keys['w'] || this.keys['arrowup']) inputY -= 1
+    if (this.keys['s'] || this.keys['arrowdown']) inputY += 1
+    if (this.keys['a'] || this.keys['arrowleft']) inputX -= 1
+    if (this.keys['d'] || this.keys['arrowright']) inputX += 1
+    // 对角线归一化，保证各方向速度一致
+    if (inputX !== 0 && inputY !== 0) {
+      const invSqrt2 = 0.7071067811865476
+      inputX *= invSqrt2
+      inputY *= invSqrt2
     }
-    if (this.keys['s'] || this.keys['arrowdown']) {
-      this.playerY += moveSpeed
-    }
-    if (this.keys['a'] || this.keys['arrowleft']) {
-      this.playerX -= moveSpeed
-    }
-    if (this.keys['d'] || this.keys['arrowright']) {
-      this.playerX += moveSpeed
-    }
+    
+    // 目标速度（像素/秒）- 直接跟随输入，消除延迟
+    const targetVelX = inputX * moveSpeed
+    const targetVelY = inputY * moveSpeed
+    this.playerVelX = targetVelX
+    this.playerVelY = targetVelY
+    this.playerX += targetVelX * dt
+    this.playerY += targetVelY * dt
     
     // 边界检查
     this.playerX = Math.max(20, Math.min(this.canvas.width - 20, this.playerX))
     this.playerY = Math.max(20, Math.min(this.canvas.height - 20, this.playerY))
+    
+    // **新增**：治疗轨迹效果 - 移动时留下治疗区域
+    const specialEffects = (this.gameState?.player as any)?.specialEffects || []
+    if (specialEffects.includes('move_heal_trail')) {
+      const now = Date.now()
+      const isMoving = inputX !== 0 || inputY !== 0
+      
+      if (isMoving && now >= this.healTrailCooldown) {
+        // 检查是否移动了足够距离（避免在同一个位置重复创建）
+        const minDistance = 30 // 最小距离（像素）
+        if (this.lastHealTrailPosition) {
+          const dx = this.playerX - this.lastHealTrailPosition.x
+          const dy = this.playerY - this.lastHealTrailPosition.y
+          const distSq = dx * dx + dy * dy
+          
+          if (distSq < minDistance * minDistance) {
+            // 距离太近，不创建新的治疗区域
+            return
+          }
+        }
+        
+        // 创建治疗区域
+        const healRadius = 40 // 治疗区域半径
+        const healPerSecond = 2 // 每秒回复2点生命
+        const duration = 5000 // 持续5秒
+        
+        this.healTrailAreas.push({
+          x: this.playerX,
+          y: this.playerY,
+          radius: healRadius,
+          healPerSecond: healPerSecond,
+          life: duration,
+          maxLife: duration,
+          createdAt: now
+        })
+        
+        // 限制治疗区域数量（最多20个）
+        if (this.healTrailAreas.length > 20) {
+          this.healTrailAreas.shift()
+        }
+        
+        // 更新上次位置和冷却时间
+        this.lastHealTrailPosition = { x: this.playerX, y: this.playerY }
+        this.healTrailCooldown = now + 200 // 200ms冷却，避免创建太密集
+        
+        // 添加创建特效 - 绿色光环
+        this.effectsSystem.createParticleEffect('magic_burst', this.playerX, this.playerY, {
+          count: 20,
+          colors: ['#00ff88', '#00ffaa', '#88ffaa', '#ffffff'],
+          size: { min: 3, max: 8 },
+          speed: { min: 20, max: 60 },
+          life: { min: 500, max: 1000 },
+          spread: 360
+        })
+      }
+    }
   }
 
   // 更新生命回复
   private updateHealthRegen() {
     const now = Date.now()
+    
+    // **新增**：更新治疗轨迹区域
+    this.healTrailAreas = this.healTrailAreas.filter(area => {
+      area.life -= 16.67 // 假设60FPS，每帧减少约16.67ms
+      return area.life > 0
+    })
+    
+    // 检查玩家是否在治疗区域内
+    for (const area of this.healTrailAreas) {
+      const dx = this.playerX - area.x
+      const dy = this.playerY - area.y
+      const distSq = dx * dx + dy * dy
+      const radiusSq = area.radius * area.radius
+      
+      if (distSq <= radiusSq) {
+        // 玩家在治疗区域内，每秒回复生命
+        const healAmount = (area.healPerSecond * 16.67) / 1000 // 每帧回复量
+        this.playerHealth = Math.min(this.playerMaxHealth, this.playerHealth + healAmount)
+      }
+    }
     
     // 每秒回复一次（1000毫秒 = 1秒）
     if (now - this.lastRegenTime >= 1000) {
@@ -4366,26 +7049,31 @@ export class TestGameEngine {
       const previousLevel = this.currentLevel
       const newLevel = this.currentLevel + 1
       
-      // **关键修复**：检查是否在Boss层，如果本层没有击杀Boss，则重置hasDefeatedBoss
-      // 只有成功击杀Boss的层，hasDefeatedBoss才会保持为true，用于下一层的精英怪额外属性选择
-      const isBossLevel = [5, 10, 15, 20].includes(previousLevel)
-      if (isBossLevel && this.gameState) {
-        // 检查本层是否真的击杀了Boss（通过bossDefeated标志）
-        const bossWasDefeated = this.gameState.bossDefeated === previousLevel
-        if (!bossWasDefeated) {
+      // **关键修复**：检查是否有Boss被击败（不再限制为特定层，只要击败Boss就有奖励）
+      // 通过检查bossDefeated标志来判断是否有Boss被击败
+      if (this.gameState) {
+        const bossDefeatedValue = this.gameState.bossDefeated
+        const bossWasDefeated = bossDefeatedValue === previousLevel && bossDefeatedValue !== undefined
+        const isBossLevel = [5, 10, 15, 20].includes(previousLevel) || bossWasDefeated
+        
+        console.log(`[nextLevel-Engine] Boss检查：previousLevel=${previousLevel}, currentLevel=${this.currentLevel}, bossDefeated=${bossDefeatedValue}, bossWasDefeated=${bossWasDefeated}, isBossLevel=${isBossLevel}`)
+        console.log(`[nextLevel-Engine] 所有Boss类型: ${this.enemies.filter(e => e.type && ['infantry_captain', 'fortress_guard', 'void_shaman', 'legion_commander'].includes(e.type)).map(e => e.type).join(', ')}`)
+        
+        if (bossWasDefeated) {
+          console.log(`[nextLevel-Engine] ✅ 第${previousLevel}层Boss被击败，保留bossDefeated=${bossDefeatedValue}标志，供回调使用`)
+          // **关键修复**：确保bossDefeated标志在回调前不被清除，让store的nextLevel()可以读取
+        } else if (isBossLevel) {
           // 如果本层是Boss层但没有击杀Boss（时间到了），重置hasDefeatedBoss和额外属性选择标志
-          console.log(`[nextLevel] Boss层(${previousLevel})未击杀Boss（时间到），重置hasDefeatedBoss标志`)
+          console.log(`[nextLevel-Engine] Boss层(${previousLevel})未击杀Boss（时间到），重置hasDefeatedBoss标志`)
           this.gameState.hasDefeatedBoss = false
           this.gameState.extraAttributeSelect = false // **关键修复**：同时重置额外属性选择标志
         } else {
-          console.log(`[nextLevel] Boss层(${previousLevel})成功击杀Boss，保留hasDefeatedBoss标志`)
-        }
-      } else if (this.gameState) {
-        // **关键修复**：非Boss层进入下一层时，如果之前有未使用的额外属性选择标志，也要清除
-        // 避免在非Boss层显示额外属性选择
-        if (this.gameState.extraAttributeSelect && !this.gameState.hasDefeatedBoss) {
-          console.log(`[nextLevel] 非Boss层，清除无效的额外属性选择标志`)
-          this.gameState.extraAttributeSelect = false
+          // **关键修复**：非Boss层进入下一层时，如果之前有未使用的额外属性选择标志，也要清除
+          // 避免在非Boss层显示额外属性选择
+          if (this.gameState.extraAttributeSelect && !this.gameState.hasDefeatedBoss) {
+            console.log(`[nextLevel-Engine] 非Boss层，清除无效的额外属性选择标志`)
+            this.gameState.extraAttributeSelect = false
+          }
         }
       }
       
@@ -4399,12 +7087,27 @@ export class TestGameEngine {
       this.playerX = this.canvas.width / 2
       this.playerY = this.canvas.height / 2
       // 清空所有敌人、投射物和特效（每一层开始时都没有敌人）
+      // **关键修复**：确保清空所有Boss相关数据，防止内存泄漏
+      // 使用传统for循环，限制检查数量
+      const maxBossCheck = Math.min(this.enemies.length, 10) // 最多检查10个（一般只有1个Boss）
+      for (let i = 0; i < maxBossCheck; i++) {
+        const enemy = this.enemies[i]
+        if (enemy && enemy.type === 'fortress_guard') {
+          const hiveMother = enemy as any
+          if (hiveMother.pendingEggs) hiveMother.pendingEggs = []
+          if (hiveMother.stormZones) hiveMother.stormZones = []
+        }
+      }
       this.enemies = []
       this.pendingEnemies = [] // 清空待添加队列
       this.projectiles = []
       this.effects = []
       // 重置本层Boss生成标记
       this.bossSpawnedInLevel = false
+    this.bossCountInLevel = 0
+    this.targetBossCount = 1
+      this.bossCountInLevel = 0
+      this.targetBossCount = 1
       // 重置层级开始时间和生成计时器
       this.levelStartTime = Date.now()
       this.enemySpawnTimer = 0
@@ -4493,6 +7196,113 @@ export class TestGameEngine {
       // 不调用startNewLevel，保持当前游戏状态
       console.log('获得被动属性:', selected.name, '，继续当前层')
     }
+  }
+
+  // **关键修复**：强制清理所有累积的资源，防止长时间运行后卡顿
+  private forceCleanup() {
+    // 清理过期的投射物（超出边界或存活时间过长）
+    const margin = 200
+    this.projectiles = this.projectiles.filter(p => {
+      // 检查是否超出边界太远
+      if (p.x < -margin || p.x > this.canvas.width + margin ||
+          p.y < -margin || p.y > this.canvas.height + margin) {
+        return false
+      }
+      return true
+    })
+    
+    // 限制投射物数量（更激进）
+    if (this.projectiles.length > this.MAX_PROJECTILES * 0.8) {
+      this.projectiles = this.projectiles.slice(-Math.floor(this.MAX_PROJECTILES * 0.8))
+    }
+    
+    // 清理过期的特效
+    if (this.effects.length > 50) {
+      this.effects = this.effects.filter(e => e.life > 0).slice(-50)
+    }
+    
+    // 清理过期的掉落物
+    if (this.droppedItems.length > this.MAX_DROPPED_ITEMS * 0.8) {
+      this.droppedItems = this.droppedItems.slice(-Math.floor(this.MAX_DROPPED_ITEMS * 0.8))
+    }
+    
+    // **关键修复**：清理Boss的累积数据，限制检查数量
+    const maxBossCheck = Math.min(this.enemies.length, 10) // 最多检查10个
+    for (let i = 0; i < maxBossCheck; i++) {
+      const enemy = this.enemies[i]
+      if (enemy && enemy.type === 'fortress_guard') {
+        const hiveMother = enemy as any
+        // **关键修复**：使用更严格的限制（8个而不是10个）
+        if (hiveMother.pendingEggs && hiveMother.pendingEggs.length > 8) {
+          hiveMother.pendingEggs = hiveMother.pendingEggs.slice(-8)
+        }
+        if (hiveMother.stormZones && hiveMother.stormZones.length > 2) {
+          hiveMother.stormZones = hiveMother.stormZones.slice(-2)
+        }
+      }
+    }
+    
+    // 清理敌人数量（如果超过限制）
+    if (this.enemies.length > this.MAX_ENEMIES * 0.9) {
+      // 删除最旧的敌人（非Boss）
+      const bossTypes = ['infantry_captain', 'fortress_guard', 'void_shaman', 'legion_commander']
+      const nonBossEnemies = this.enemies.filter((e, i) => !e.type || !bossTypes.includes(e.type))
+      if (nonBossEnemies.length > this.MAX_ENEMIES * 0.7) {
+        // 删除最旧的10%普通敌人
+        const toDelete = Math.floor(nonBossEnemies.length * 0.1)
+        for (let i = 0; i < toDelete && this.enemies.length > this.MAX_ENEMIES * 0.8; i++) {
+          const index = this.enemies.findIndex(e => e === nonBossEnemies[i])
+          if (index >= 0) {
+            this.enemies.splice(index, 1)
+          }
+        }
+      }
+    }
+  }
+
+  // **新增**：获得道具时的特效反馈
+  public onItemAcquired(reward: any) {
+    if (!reward) return
+    
+    const quality = reward.color || 'green'
+    let particleColors: string[] = []
+    let messageColor = '#ffffff'
+    
+    // 根据品质设置不同的特效颜色
+    switch (quality) {
+      case 'green':
+        particleColors = ['#00ff00', '#88ff88', '#ffffff', '#44ff44']
+        messageColor = '#00ff00'
+        break
+      case 'blue':
+        particleColors = ['#00aaff', '#44ddff', '#ffffff', '#88ccff']
+        messageColor = '#00aaff'
+        break
+      case 'purple':
+        particleColors = ['#aa00ff', '#cc44ff', '#ffffff', '#dd88ff']
+        messageColor = '#aa00ff'
+        break
+      case 'gold':
+        particleColors = ['#ffaa00', '#ffcc44', '#ffffff', '#ffdd88']
+        messageColor = '#ffaa00'
+        break
+    }
+    
+    // 创建获得道具的特效
+    this.effectsSystem.createParticleEffect('magic_burst', this.playerX, this.playerY, {
+      count: 50,
+      colors: particleColors,
+      size: { min: 4, max: 10 },
+      speed: { min: 30, max: 100 },
+      life: { min: 800, max: 1500 },
+      spread: 360
+    })
+    
+    // 添加屏幕消息提示
+    this.addScreenMessage('获得道具', reward.name || '未知道具', messageColor, 2500)
+    
+    // 播放获得道具音效
+    this.audioSystem.playSoundEffect('item_pickup', { volume: 0.8 })
   }
 
   // 应用被动属性
@@ -4803,7 +7613,7 @@ export class TestGameEngine {
 
   // 跳转到指定层（用于测试功能）
   public jumpToLevel(level: number) {
-    if (level < 1 || level > 20) {
+    if (level < 1) {
       console.warn('无效的层数:', level)
       return
     }
@@ -4832,6 +7642,8 @@ export class TestGameEngine {
     this.droppedItems = []
     // 重置本层Boss生成标记
     this.bossSpawnedInLevel = false
+    this.bossCountInLevel = 0
+    this.targetBossCount = 1
     
     // 重置层级开始时间和生成计时器
     this.levelStartTime = Date.now()
@@ -4849,6 +7661,8 @@ export class TestGameEngine {
     this.hasTriggeredLevelComplete = false // 重置关卡完成标志
     // 重置本层Boss生成标记（用于某些流程进入新层）
     this.bossSpawnedInLevel = false
+    this.bossCountInLevel = 0
+    this.targetBossCount = 1
     
     // 更新游戏状态中的层数
     if (this.gameState) {

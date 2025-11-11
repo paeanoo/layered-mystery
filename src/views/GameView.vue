@@ -54,6 +54,19 @@
       @apply-attributes="handleApplyAttributes"
     />
 
+    <!-- 商店界面 -->
+    <ShopModal
+      :visible="gameStore.showShop"
+      :level="gameStore.gameState.level"
+      :current-gold="gameStore.gameState.player.gold || 0"
+      :shop-items="gameStore.availableShopItems"
+      :refresh-cost="gameStore.shopRefreshCost"
+      @close="handleShopClose"
+      @buy-item="handleBuyItem"
+      @toggle-lock="handleToggleLock"
+      @refresh-all="handleRefreshAll"
+    />
+
     <!-- 游戏控制按钮 -->
     <div class="game-controls">
       <button class="btn btn-small" @click="togglePause">
@@ -76,7 +89,11 @@ import { PASSIVE_ATTRIBUTES } from '../types/game'
 import PassiveSelectionModal from '../game/ui/PassiveSelectionModal.vue'
 import CharacterDetailsModal from '../game/ui/CharacterDetailsModal.vue'
 import CharacterAttributesModal from '../game/ui/CharacterAttributesModal.vue'
+import ShopModal from '../game/ui/ShopModal.vue'
 import type { PlayerState } from '../types/game'
+import type { GeneratedReward } from '../utils/RewardGenerator'
+
+type ShopItem = GeneratedReward & { locked: boolean }
 
 const router = useRouter()
 const gameStore = useGameStore()
@@ -128,6 +145,38 @@ const updateGameState = () => {
     gameStore.gameState.level = gameEngine.currentLevel
     gameStore.gameState.score = gameEngine.getScore()
     gameStore.gameState.enemiesDefeated = Math.floor(gameEngine.getScore() / 10)
+    
+    // **关键修复**：实时更新最高分数和层数，并自动保存到本地存储和数据库
+    let shouldSave = false
+    if (gameStore.gameState.score > gameStore.highestScore) {
+      gameStore.highestScore = gameStore.gameState.score
+      shouldSave = true
+    }
+    if (gameStore.gameState.level > gameStore.highestLevel) {
+      gameStore.highestLevel = gameStore.gameState.level
+      shouldSave = true
+    }
+    
+    // **关键修复**：延迟保存，避免频繁调用（每5秒保存一次）
+    if (shouldSave) {
+      // 立即保存到本地存储
+      const records = {
+        highestScore: gameStore.highestScore,
+        highestLevel: gameStore.highestLevel,
+        longestSurvival: gameStore.longestSurvival
+      }
+      localStorage.setItem('gameRecords', JSON.stringify(records))
+      
+      // 延迟保存到数据库（避免频繁调用）
+      if (!gameStore._lastSaveTime) gameStore._lastSaveTime = 0
+      const now = Date.now()
+      if (now - gameStore._lastSaveTime > 5000) { // 每5秒保存一次
+        gameStore._lastSaveTime = now
+        gameStore.saveGameSessionToDatabase().catch((err: any) => {
+          console.error('保存最高记录到数据库失败:', err)
+        })
+      }
+    }
   }
 }
 
@@ -190,6 +239,10 @@ const confirmSelection = () => {
       if (!gameStore.gameState.isGameOver) {
         gameEngine.setPaused(false)
       }
+    }
+    // 选择后是否自动打开属性界面（可在设置中开启）
+    if (gameStore.uiSettings?.autoOpenAttributesAfterSelection) {
+      showCharacterAttributesModal.value = true
     }
   }
 }
@@ -341,7 +394,7 @@ const closeCharacterAttributesModal = () => {
 
 // 处理关卡跳转
 const handleJumpToLevel = (level: number) => {
-  if (level >= 1 && level <= 20 && gameEngine) {
+  if (level >= 1 && gameEngine) {
     // 使用游戏引擎的跳转方法，会模拟正常进入该层
     gameEngine.jumpToLevel(level)
     console.log(`跳转到关卡 ${level}`)
@@ -383,6 +436,31 @@ const formatTime = (seconds: number) => {
   const mins = Math.floor(seconds / 60)
   const secs = Math.floor(seconds % 60)
   return `${mins}:${secs.toString().padStart(2, '0')}`
+}
+
+// 商店相关处理
+const handleShopClose = () => {
+  gameStore.closeShop()
+  if (gameEngine) {
+    gameEngine.setPaused(false)
+  }
+}
+
+const handleBuyItem = (item: ShopItem | null | undefined, index: number) => {
+  if (!item || !item.option) return
+  gameStore.buyShopItem(item, index)
+  // 同步到游戏引擎
+  if (gameEngine) {
+    gameEngine.updateGameState(gameStore.gameState)
+  }
+}
+
+const handleToggleLock = (index: number) => {
+  gameStore.toggleShopItemLock(index)
+}
+
+const handleRefreshAll = () => {
+  gameStore.refreshAllShopItems()
 }
 </script>
 

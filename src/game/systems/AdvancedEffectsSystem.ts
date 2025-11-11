@@ -74,9 +74,47 @@ export class AdvancedEffectsSystem {
   }
 
   private updateParticleEffects(deltaTime: number) {
+    // **关键修复**：更激进的限制，防止长时间运行后累积卡顿
+    const MAX_EFFECTS = 20 // 从50降低到20，大幅减少效果数量
+    const MAX_PARTICLES_PER_EFFECT = 50 // 从200降低到50，大幅减少每个效果的粒子数
+    const MAX_TOTAL_PARTICLES = 500 // 总粒子数上限，防止累积
+    
+    // **关键修复**：每帧都检查并清理，而不仅仅是超过限制时
+    let totalParticles = 0
+    this.particleEffects.forEach(effect => {
+      totalParticles += effect.particles.length
+    })
+    
+    // 如果总粒子数过多，立即清理最旧的效果
+    if (totalParticles > MAX_TOTAL_PARTICLES || this.particleEffects.size > MAX_EFFECTS) {
+      const entries = Array.from(this.particleEffects.entries())
+      // 按创建时间排序，删除最旧的
+      entries.sort((a, b) => {
+        const aTime = parseInt(a[0].split('_')[1]) || 0
+        const bTime = parseInt(b[0].split('_')[1]) || 0
+        return aTime - bTime
+      })
+      // 删除最旧的一半（更激进）
+      const toDeleteCount = Math.max(1, Math.floor(entries.length * 0.7)) // 删除70%而不是50%
+      const toDelete = entries.slice(0, toDeleteCount)
+      toDelete.forEach(([id]) => this.particleEffects.delete(id))
+    }
+    
     this.particleEffects.forEach((effect, id) => {
       // 更新效果生命周期
       effect.life -= deltaTime
+      
+      // **关键修复**：更激进的粒子数量限制，每帧都检查
+      if (effect.particles.length > MAX_PARTICLES_PER_EFFECT) {
+        // 只保留最新的粒子，删除超过限制的
+        effect.particles = effect.particles.slice(-MAX_PARTICLES_PER_EFFECT)
+      }
+      
+      // **关键修复**：如果效果生命周期已过一半但还有大量粒子，强制清理一部分
+      if (effect.life < effect.maxLife * 0.5 && effect.particles.length > MAX_PARTICLES_PER_EFFECT * 0.5) {
+        // 只保留一半粒子
+        effect.particles = effect.particles.slice(-Math.floor(MAX_PARTICLES_PER_EFFECT * 0.5))
+      }
       
       // 更新粒子
       for (let i = effect.particles.length - 1; i >= 0; i--) {
@@ -118,8 +156,8 @@ export class AdvancedEffectsSystem {
         }
       }
       
-      // 移除过期效果
-      if (effect.life <= 0 && effect.particles.length === 0) {
+      // 移除过期效果（即使还有粒子，如果生命周期已过也删除）
+      if (effect.life <= 0) {
         this.particleEffects.delete(id)
       }
     })
@@ -140,8 +178,24 @@ export class AdvancedEffectsSystem {
    * 创建粒子效果
    */
   createParticleEffect(type: string, x: number, y: number, config?: Partial<ParticleConfig>): string {
+    // **关键修复**：更激进的限制，防止累积
+    const MAX_TOTAL_EFFECTS = 20 // 从50降低到20
+    if (this.particleEffects.size >= MAX_TOTAL_EFFECTS) {
+      // 删除最旧的3个效果（更激进）
+      const keys = Array.from(this.particleEffects.keys())
+      for (let i = 0; i < Math.min(3, keys.length); i++) {
+        this.particleEffects.delete(keys[i])
+      }
+    }
+    
     const effectId = `${type}_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`
     const effectConfig = this.getEffectConfig(type, config)
+    
+    // **关键修复**：更严格的单次创建粒子数量限制
+    const MAX_PARTICLES = 50 // 从100降低到50
+    if (effectConfig.count > MAX_PARTICLES) {
+      effectConfig.count = MAX_PARTICLES
+    }
     
     const effect: ParticleEffect = {
       id: effectId,
@@ -601,11 +655,12 @@ export class AdvancedEffectsSystem {
    */
   createHitEffect(x: number, y: number, isCrit: boolean = false) {
     if (isCrit) {
+      // **减弱暴击特效**：稍微减少粒子数量、大小和速度
       this.createParticleEffect('hit_spark', x, y, {
-        count: 15,
+        count: 12, // 从15降到12
         colors: ['#ffff00', '#ff4400', '#ffffff'],
-        size: { min: 2, max: 5 },
-        speed: { min: 80, max: 200 }
+        size: { min: 1.5, max: 4 }, // 从 { min: 2, max: 5 } 降到 { min: 1.5, max: 4 }
+        speed: { min: 60, max: 150 } // 从 { min: 80, max: 200 } 降到 { min: 60, max: 150 }
       })
       // 移除暴击闪屏效果
       // this.addScreenEffect('flash', 0.3, 100, '#ffff00')

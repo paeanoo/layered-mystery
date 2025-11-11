@@ -378,10 +378,12 @@ export class SimpleGameEngine {
   }
 
   private renderUI() {
-    // 分数
+    // 分数与金币
     this.ctx.fillStyle = '#ffffff'
     this.ctx.font = '20px Arial'
     this.ctx.fillText(`分数: ${this.gameState.score}`, 20, 30)
+    const gold = this.gameState?.player?.gold ?? 0
+    this.ctx.fillText(`金币: ${gold}`, 120, 30)
 
     // 层数
     this.ctx.fillText(`层数: ${this.gameState.level}`, 20, 60)

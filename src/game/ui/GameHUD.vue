@@ -40,8 +40,7 @@
             <input 
               type="number" 
               v-model.number="targetLevel" 
-              min="1" 
-              max="20"
+              min="1"
               class="level-input"
             />
           </div>
@@ -68,6 +67,16 @@
           ></div>
           <span class="health-text">
             {{ Math.ceil(currentHealth) }}/{{ maxHealth }}
+          </span>
+        </div>
+        <!-- 护盾值条 -->
+        <div class="shield-bar" v-if="shield > 0 || maxShield > 0">
+          <div 
+            class="shield-fill" 
+            :style="{ width: shieldPercent + '%' }"
+          ></div>
+          <span class="shield-text">
+            🛡️ {{ Math.ceil(shield) }}/{{ maxShield }}
           </span>
         </div>
         <div class="health-stats">
@@ -148,6 +157,8 @@ interface Props {
   damage: number
   attackSpeed: number
   isPaused: boolean
+  shield?: number
+  maxShield?: number
 }
 
 interface Emits {
@@ -166,6 +177,12 @@ const targetLevel = ref(1)
 
 const healthPercent = computed(() => 
   (props.currentHealth / props.maxHealth) * 100
+)
+
+const shield = computed(() => props.shield || 0)
+const maxShield = computed(() => props.maxShield || 0)
+const shieldPercent = computed(() => 
+  maxShield.value > 0 ? (shield.value / maxShield.value) * 100 : 0
 )
 
 const formatTime = (seconds: number) => {
@@ -256,7 +273,7 @@ const showLevelSelect = () => {
 }
 
 const jumpToLevel = () => {
-  if (targetLevel.value >= 1 && targetLevel.value <= 20) {
+  if (targetLevel.value >= 1) {
     emit('jump-to-level', targetLevel.value)
     showLevelModal.value = false
   }
@@ -421,6 +438,34 @@ const jumpToLevel = () => {
   color: var(--accent-color);
   font-size: 0.8rem;
   font-weight: bold;
+}
+
+.shield-bar {
+  position: relative;
+  width: 100%;
+  height: 18px;
+  background: rgba(0, 255, 255, 0.2);
+  border: 2px solid #00ffff;
+  border-radius: 9px;
+  margin-top: 0.5rem;
+  overflow: hidden;
+}
+
+.shield-fill {
+  height: 100%;
+  background: linear-gradient(90deg, #00ffff, #88ffff);
+  transition: width 0.3s ease;
+}
+
+.shield-text {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  color: #ffffff;
+  font-weight: bold;
+  font-size: 0.85rem;
+  text-shadow: 0 0 4px rgba(0, 0, 0, 0.8);
 }
 
 .passive-attributes {

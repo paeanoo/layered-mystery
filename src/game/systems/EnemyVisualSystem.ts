@@ -36,12 +36,60 @@ export class EnemyVisualSystem {
     })
   }
 
+  // 精细化绘制辅助函数
+  private drawDetailedRect(ctx: CanvasRenderingContext2D, x: number, y: number, width: number, height: number, 
+                           baseColor: string, highlightColor?: string, shadowColor?: string, radius: number = 0) {
+    // 绘制阴影
+    if (shadowColor) {
+      ctx.fillStyle = shadowColor
+      ctx.globalAlpha = 0.4
+      ctx.beginPath()
+      if (radius > 0) {
+        this.drawRoundedRect(ctx, x + 1, y + 1, width, height, radius)
+      } else {
+        ctx.fillRect(x + 1, y + 1, width, height)
+      }
+      ctx.fill()
+      ctx.globalAlpha = 1
+    }
+    
+    // 绘制主体
+    ctx.fillStyle = baseColor
+    ctx.beginPath()
+    if (radius > 0) {
+      this.drawRoundedRect(ctx, x, y, width, height, radius)
+    } else {
+      ctx.fillRect(x, y, width, height)
+    }
+    ctx.fill()
+    
+    // 绘制高光
+    if (highlightColor) {
+      const gradient = ctx.createLinearGradient(x, y, x, y + height * 0.3)
+      gradient.addColorStop(0, highlightColor)
+      gradient.addColorStop(1, 'transparent')
+      ctx.fillStyle = gradient
+      ctx.globalAlpha = 0.6
+      ctx.beginPath()
+      if (radius > 0) {
+        this.drawRoundedRect(ctx, x, y, width, height * 0.3, radius)
+      } else {
+        ctx.fillRect(x, y, width, height * 0.3)
+      }
+      ctx.fill()
+      ctx.globalAlpha = 1
+    }
+  }
+
   /**
    * 绘制精细的敌人模型
    */
   drawEnemy(ctx: CanvasRenderingContext2D, x: number, y: number, options: EnemyRenderOptions, enemyId?: string) {
     ctx.save()
     ctx.translate(x, y)
+    
+    // 启用高质量渲染
+    ctx.imageSmoothingEnabled = true
 
     // 绘制阴影
     this.drawShadow(ctx, 0, 3, options.size * 0.8)
@@ -65,6 +113,9 @@ export class EnemyVisualSystem {
 
     // 根据敌人类型绘制不同的模型
     switch (options.type) {
+      case 'egg':
+        this.drawEggEnemy(ctx, options)
+        break
       case 'bug':
         this.drawBugEnemy(ctx, options)
         break
@@ -222,20 +273,149 @@ export class EnemyVisualSystem {
         break
     }
 
-    // 绘制机甲身体 - 厚重装甲
-    const bodyGradient = this.createGradient(ctx, '#9CA3AF', this.darkenColor(primaryColor), 0, -size*0.6, 0, size*0.6)
+    // 超精细化机甲身体 - 多层细节结构与纹理
+    const bodyWidth = size * 0.4
+    const bodyHeight = size * 1.0
+    const darkColor = this.darkenColor(primaryColor)
+    const lightColor = '#D1D5DB'
+    
+    // 主体躯干基础层（带渐变和阴影）
+    const bodyGradient = this.createGradient(ctx, '#9CA3AF', darkColor, 0, -size*0.5, 0, size*0.5)
     ctx.fillStyle = bodyGradient
-    this.drawRoundedRect(ctx, -size*0.2, -size*0.5, size*0.4, size*1.0, 3)
-
-    // 内层装甲
-    ctx.fillStyle = this.createGradient(ctx, primaryColor, this.darkenColor(primaryColor), 0, -size*0.45, 0, size*0.45)
-    this.drawRoundedRect(ctx, -size*0.18, -size*0.45, size*0.36, size*0.9, 2)
-
-    // 机甲能源线路
-    ctx.strokeStyle = accentColor
+    this.drawRoundedRect(ctx, -size*0.2, -size*0.5, bodyWidth, bodyHeight, 4)
+    
+    // 主体阴影（左侧，多层阴影）
+    ctx.fillStyle = darkColor
+    ctx.globalAlpha = 0.6
+    this.drawRoundedRect(ctx, -size*0.2, -size*0.5, 4, bodyHeight, 4)
+    ctx.globalAlpha = 0.3
+    this.drawRoundedRect(ctx, -size*0.19, -size*0.49, 2, bodyHeight - 2, 3)
+    ctx.globalAlpha = 1
+    
+    // 主体高光（顶部和右侧，多层高光）
+    const topHighlightGradient = this.createGradient(ctx, lightColor, 'transparent', 0, -size*0.5, 0, -size*0.3)
+    ctx.fillStyle = topHighlightGradient
+    this.drawRoundedRect(ctx, -size*0.18, -size*0.5, bodyWidth-4, size*0.2, 3)
+    
+    // 顶部边缘高光
+    ctx.fillStyle = '#FFFFFF'
+    ctx.globalAlpha = 0.3
+    this.drawRoundedRect(ctx, -size*0.17, -size*0.5, bodyWidth-6, size*0.05, 2)
+    ctx.globalAlpha = 1
+    
+    const rightHighlightGradient = this.createGradient(ctx, lightColor, 'transparent', size*0.18, -size*0.3, size*0.18, size*0.3)
+    ctx.fillStyle = rightHighlightGradient
+    this.drawRoundedRect(ctx, size*0.15, -size*0.3, 3, size*0.6, 2)
+    
+    // 右侧边缘高光
+    ctx.fillStyle = '#FFFFFF'
+    ctx.globalAlpha = 0.2
+    this.drawRoundedRect(ctx, size*0.17, -size*0.28, 1, size*0.56, 1)
+    ctx.globalAlpha = 1
+    
+    // 金属质感纹理 - 细微划痕
+    ctx.strokeStyle = darkColor
+    ctx.lineWidth = 0.5
+    ctx.globalAlpha = 0.3
+    for (let i = 0; i < 10; i++) {
+      const y = -size*0.45 + i * size*0.1
+      const xOffset = Math.sin(i * 0.4) * 1.5
+      ctx.beginPath()
+      ctx.moveTo(-size*0.17 + xOffset, y)
+      ctx.lineTo(size*0.17 + xOffset, y + 0.5)
+      ctx.stroke()
+    }
+    ctx.globalAlpha = 1
+    
+    // 装甲板接缝线
+    ctx.strokeStyle = darkColor
+    ctx.lineWidth = 1
+    ctx.globalAlpha = 0.5
+    ctx.beginPath()
+    ctx.moveTo(-size*0.15, -size*0.45)
+    ctx.lineTo(-size*0.15, size*0.45)
+    ctx.moveTo(size*0.15, -size*0.45)
+    ctx.lineTo(size*0.15, size*0.45)
+    ctx.stroke()
+    for (let i = 0; i < 4; i++) {
+      const y = -size*0.35 + i * size*0.2
+      ctx.beginPath()
+      ctx.moveTo(-size*0.18, y)
+      ctx.lineTo(size*0.18, y)
+      ctx.stroke()
+    }
+    ctx.globalAlpha = 1
+    
+    // 内层装甲（多层结构）
+    ctx.fillStyle = this.createGradient(ctx, primaryColor, darkColor, 0, -size*0.45, 0, size*0.45)
+    this.drawRoundedRect(ctx, -size*0.18, -size*0.45, size*0.36, size*0.9, 3)
+    
+    // 装甲细节线条和铆钉（增强版）
+    ctx.strokeStyle = darkColor
     ctx.lineWidth = 1.5
+    for (let i = 0; i < 3; i++) {
+      const y = -size*0.3 + i * size*0.2
+      ctx.beginPath()
+      ctx.moveTo(-size*0.16, y)
+      ctx.lineTo(size*0.16, y)
+      ctx.stroke()
+      
+      // 线条高光
+      ctx.strokeStyle = lightColor
+      ctx.lineWidth = 0.5
+      ctx.globalAlpha = 0.4
+      ctx.beginPath()
+      ctx.moveTo(-size*0.16, y - 0.5)
+      ctx.lineTo(size*0.16, y - 0.5)
+      ctx.stroke()
+      ctx.globalAlpha = 1
+      ctx.strokeStyle = darkColor
+      ctx.lineWidth = 1.5
+      
+      // 铆钉装饰（多层）
+      // 左铆钉阴影
+      ctx.fillStyle = '#1F2937'
+      ctx.beginPath()
+      ctx.arc(-size*0.14, y + 0.5, 1.2, 0, Math.PI * 2)
+      ctx.fill()
+      // 左铆钉主体
+      const rivetGradient = this.createGradient(ctx, '#6B7280', '#4A5568', -size*0.14, y - 1, -size*0.14, y + 1)
+      ctx.fillStyle = rivetGradient
+      ctx.beginPath()
+      ctx.arc(-size*0.14, y, 1, 0, Math.PI * 2)
+      ctx.fill()
+      // 左铆钉高光
+      ctx.fillStyle = '#9CA3AF'
+      ctx.globalAlpha = 0.6
+      ctx.beginPath()
+      ctx.arc(-size*0.14, y - 0.3, 0.5, 0, Math.PI * 2)
+      ctx.fill()
+      ctx.globalAlpha = 1
+      
+      // 右铆钉（同样处理）
+      ctx.fillStyle = '#1F2937'
+      ctx.beginPath()
+      ctx.arc(size*0.14, y + 0.5, 1.2, 0, Math.PI * 2)
+      ctx.fill()
+      ctx.fillStyle = rivetGradient
+      ctx.beginPath()
+      ctx.arc(size*0.14, y, 1, 0, Math.PI * 2)
+      ctx.fill()
+      ctx.fillStyle = '#9CA3AF'
+      ctx.globalAlpha = 0.6
+      ctx.beginPath()
+      ctx.arc(size*0.14, y - 0.3, 0.5, 0, Math.PI * 2)
+      ctx.fill()
+      ctx.globalAlpha = 1
+    }
+
+    // 精细化能源线路系统（带发光效果）
+    ctx.strokeStyle = accentColor
+    ctx.lineWidth = 2
     ctx.shadowColor = accentColor
-    ctx.shadowBlur = 3
+    ctx.shadowBlur = 5
+    const pulse = Math.sin(this.animationTime / 200) * 0.3 + 0.7
+    ctx.globalAlpha = pulse
     ctx.beginPath()
     ctx.moveTo(-size*0.15, -size*0.3)
     ctx.lineTo(size*0.15, -size*0.3)
@@ -247,63 +427,113 @@ export class EnemyVisualSystem {
     ctx.moveTo(0, -size*0.4)
     ctx.lineTo(0, size*0.3)
     ctx.stroke()
+    ctx.globalAlpha = 1
     ctx.shadowBlur = 0
-
-    // 胸前反应堆
+    
+    // 能源节点（线路交叉点）
     ctx.fillStyle = accentColor
     ctx.shadowColor = accentColor
+    ctx.shadowBlur = 3
+    ctx.beginPath()
+    ctx.arc(0, -size*0.3, 2, 0, Math.PI * 2)
+    ctx.arc(0, -size*0.1, 2, 0, Math.PI * 2)
+    ctx.arc(0, size*0.1, 2, 0, Math.PI * 2)
+    ctx.fill()
+    ctx.shadowBlur = 0
+
+    // 精细化胸前反应堆核心 - 多层发光效果
+    // 外圈能量环
+    ctx.strokeStyle = accentColor
+    ctx.lineWidth = 2
+    ctx.shadowColor = accentColor
+    ctx.shadowBlur = 8
+    ctx.beginPath()
+    ctx.arc(0, -size*0.2, size*0.1, 0, Math.PI * 2)
+    ctx.stroke()
+    
+    // 中圈能量
+    ctx.fillStyle = accentColor
     ctx.shadowBlur = 6
     ctx.beginPath()
     ctx.arc(0, -size*0.2, size*0.08, 0, Math.PI * 2)
     ctx.fill()
-    ctx.shadowBlur = 0
     
-    // 反应堆内核
-    ctx.fillStyle = '#FFFFFF'
-    ctx.shadowColor = '#FFFFFF'
-    ctx.shadowBlur = 3
-    ctx.beginPath()
-    ctx.arc(0, -size*0.2, size*0.04, 0, Math.PI * 2)  
-    ctx.fill()
-    ctx.shadowBlur = 0
-
-    // 厚重肩部装甲
-    ctx.fillStyle = this.createGradient(ctx, '#D1D5DB', primaryColor, 0, 0, size*0.3, 0)
-    this.drawRoundedRect(ctx, -size*0.28, -size*0.48, size*0.12, size*0.15, 2)
-    this.drawRoundedRect(ctx, size*0.16, -size*0.48, size*0.12, size*0.15, 2)
-
-    // 肩部推进器
-    ctx.fillStyle = this.createGradient(ctx, '#6B7280', '#374151', 0, 0, size*0.15, 0)
-    this.drawRoundedRect(ctx, -size*0.25, -size*0.42, size*0.06, size*0.08, 1)
-    this.drawRoundedRect(ctx, size*0.19, -size*0.42, size*0.06, size*0.08, 1)
-
-    // 推进器发光
-    ctx.fillStyle = accentColor
-    ctx.shadowColor = accentColor
+    // 内核高亮
+    ctx.fillStyle = '#88EEFF'
     ctx.shadowBlur = 4
     ctx.beginPath()
-    ctx.arc(-size*0.22, -size*0.38, size*0.02, 0, Math.PI * 2)
-    ctx.arc(size*0.22, -size*0.38, size*0.02, 0, Math.PI * 2)
+    ctx.arc(0, -size*0.2, size*0.05, 0, Math.PI * 2)
+    ctx.fill()
+    
+    // 核心白点
+    ctx.fillStyle = '#FFFFFF'
+    ctx.shadowBlur = 3
+    ctx.beginPath()
+    ctx.arc(0, -size*0.2, size*0.03, 0, Math.PI * 2)
     ctx.fill()
     ctx.shadowBlur = 0
 
-    // 绘制机甲头盔 - 厚重装甲头盔
-    ctx.fillStyle = this.createGradient(ctx, '#9CA3AF', this.darkenColor(primaryColor), 0, -size*0.75, 0, -size*0.55)
+    // 精细化肩部装甲 - 多层结构
+    // 左肩外层
+    ctx.fillStyle = this.createGradient(ctx, '#D1D5DB', '#9CA3AF', -size*0.28, -size*0.48, -size*0.16, -size*0.48)
+    this.drawRoundedRect(ctx, -size*0.28, -size*0.48, size*0.12, size*0.15, 3)
+    // 左肩内层
+    ctx.fillStyle = this.createGradient(ctx, primaryColor, darkColor, -size*0.27, -size*0.47, -size*0.17, -size*0.47)
+    this.drawRoundedRect(ctx, -size*0.27, -size*0.47, size*0.10, size*0.13, 2)
+    
+    // 右肩外层
+    ctx.fillStyle = this.createGradient(ctx, '#D1D5DB', '#9CA3AF', size*0.16, -size*0.48, size*0.28, -size*0.48)
+    this.drawRoundedRect(ctx, size*0.16, -size*0.48, size*0.12, size*0.15, 3)
+    // 右肩内层
+    ctx.fillStyle = this.createGradient(ctx, primaryColor, darkColor, size*0.17, -size*0.47, size*0.27, -size*0.47)
+    this.drawRoundedRect(ctx, size*0.17, -size*0.47, size*0.10, size*0.13, 2)
+
+    // 精细化肩部推进器
+    ctx.fillStyle = this.createGradient(ctx, '#6B7280', '#374151', -size*0.25, -size*0.42, -size*0.19, -size*0.42)
+    this.drawRoundedRect(ctx, -size*0.25, -size*0.42, size*0.06, size*0.08, 1.5)
+    ctx.fillStyle = this.createGradient(ctx, '#6B7280', '#374151', size*0.19, -size*0.42, size*0.25, -size*0.42)
+    this.drawRoundedRect(ctx, size*0.19, -size*0.42, size*0.06, size*0.08, 1.5)
+
+    // 推进器发光效果（带脉冲）
+    const thrusterPulse = Math.sin(this.animationTime / 150) * 0.4 + 0.6
+    ctx.fillStyle = accentColor
+    ctx.shadowColor = accentColor
+    ctx.shadowBlur = 5 * thrusterPulse
+    ctx.globalAlpha = thrusterPulse
+    ctx.beginPath()
+    ctx.arc(-size*0.22, -size*0.38, size*0.025, 0, Math.PI * 2)
+    ctx.arc(size*0.22, -size*0.38, size*0.025, 0, Math.PI * 2)
+    ctx.fill()
+    ctx.globalAlpha = 1
+    ctx.shadowBlur = 0
+
+    // 精细化机甲头盔 - 多层装甲系统
+    // 头盔外层
+    const helmetGradient = this.createGradient(ctx, '#D1D5DB', '#9CA3AF', 0, -size*0.75, 0, -size*0.55)
+    ctx.fillStyle = helmetGradient
     ctx.beginPath()
     ctx.ellipse(0, -size*0.65, size*0.16, size*0.12, 0, 0, Math.PI * 2)
     ctx.fill()
-
+    
     // 头盔内层
-    ctx.fillStyle = this.createGradient(ctx, primaryColor, this.darkenColor(primaryColor), 0, -size*0.72, 0, -size*0.58)
+    ctx.fillStyle = this.createGradient(ctx, primaryColor, darkColor, 0, -size*0.72, 0, -size*0.58)
     ctx.beginPath()
     ctx.ellipse(0, -size*0.65, size*0.13, size*0.09, 0, 0, Math.PI * 2)
     ctx.fill()
-
-    // 头盔能源线路
+    
+    // 头盔顶部高光
+    ctx.fillStyle = lightColor
+    ctx.globalAlpha = 0.6
+    ctx.beginPath()
+    ctx.ellipse(0, -size*0.72, size*0.12, size*0.04, 0, 0, Math.PI * 2)
+    ctx.fill()
+    ctx.globalAlpha = 1
+    
+    // 精细化头盔能源线路
     ctx.strokeStyle = accentColor
-    ctx.lineWidth = 1
+    ctx.lineWidth = 1.5
     ctx.shadowColor = accentColor
-    ctx.shadowBlur = 2
+    ctx.shadowBlur = 3
     ctx.beginPath()
     ctx.arc(0, -size*0.65, size*0.11, 0, Math.PI)
     // 侧面线路
@@ -314,7 +544,8 @@ export class EnemyVisualSystem {
     ctx.stroke()
     ctx.shadowBlur = 0
 
-    // 机甲面罩 - 全封闭
+    // 精细化面罩 - 多层结构
+    // 面罩外层
     ctx.fillStyle = '#1F2937'
     ctx.globalAlpha = 0.95
     ctx.beginPath()
@@ -322,34 +553,67 @@ export class EnemyVisualSystem {
     ctx.fill()
     ctx.globalAlpha = 1
 
-    // 面罩边框
+    // 面罩边框（带高光）
     ctx.strokeStyle = '#6B7280'
-    ctx.lineWidth = 1
+    ctx.lineWidth = 1.5
     ctx.beginPath()
     ctx.ellipse(0, -size*0.62, size*0.09, size*0.05, 0, 0, Math.PI * 2)
     ctx.stroke()
+    
+    // 面罩内层反光
+    ctx.fillStyle = '#2D3748'
+    ctx.globalAlpha = 0.5
+    ctx.beginPath()
+    ctx.ellipse(0, -size*0.62, size*0.07, size*0.04, 0, 0, Math.PI * 2)
+    ctx.fill()
+    ctx.globalAlpha = 1
 
-    // 机甲眼部系统
+    // 精细化眼部系统 - 多层发光
+    // 左眼外圈
     ctx.fillStyle = accentColor
     ctx.shadowColor = accentColor
+    ctx.shadowBlur = 6
+    ctx.beginPath()
+    ctx.ellipse(-size*0.04, -size*0.62, size*0.03, size*0.025, 0, 0, Math.PI * 2)
+    ctx.fill()
+    
+    // 左眼内圈
+    ctx.fillStyle = '#88EEFF'
     ctx.shadowBlur = 4
     ctx.beginPath()
-    ctx.ellipse(-size*0.04, -size*0.62, size*0.025, size*0.02, 0, 0, Math.PI * 2)
-    ctx.ellipse(size*0.04, -size*0.62, size*0.025, size*0.02, 0, 0, Math.PI * 2)
+    ctx.ellipse(-size*0.04, -size*0.62, size*0.02, size*0.015, 0, 0, Math.PI * 2)
     ctx.fill()
-    ctx.shadowBlur = 0
-
-    // 眼部内核
+    
+    // 左眼内核
     ctx.fillStyle = '#FFFFFF'
-    ctx.shadowColor = '#FFFFFF'
     ctx.shadowBlur = 2
     ctx.beginPath()
     ctx.arc(-size*0.04, -size*0.62, size*0.015, 0, Math.PI * 2)
+    ctx.fill()
+    
+    // 右眼外圈
+    ctx.fillStyle = accentColor
+    ctx.shadowBlur = 6
+    ctx.beginPath()
+    ctx.ellipse(size*0.04, -size*0.62, size*0.03, size*0.025, 0, 0, Math.PI * 2)
+    ctx.fill()
+    
+    // 右眼内圈
+    ctx.fillStyle = '#88EEFF'
+    ctx.shadowBlur = 4
+    ctx.beginPath()
+    ctx.ellipse(size*0.04, -size*0.62, size*0.02, size*0.015, 0, 0, Math.PI * 2)
+    ctx.fill()
+    
+    // 右眼内核
+    ctx.fillStyle = '#FFFFFF'
+    ctx.shadowBlur = 2
+    ctx.beginPath()
     ctx.arc(size*0.04, -size*0.62, size*0.015, 0, Math.PI * 2)
     ctx.fill()
     ctx.shadowBlur = 0
 
-    // 头盔散热口
+    // 精细化头盔散热口
     ctx.fillStyle = '#374151'
     for (let i = 0; i < 2; i++) {
       const y = -size*0.72 + i * size*0.03
@@ -366,6 +630,85 @@ export class EnemyVisualSystem {
     ctx.restore()
   }
 
+  // 绘制虫卵敌人 - 优化为“科技孵化舱”视觉，降低生理不适
+  private drawEggEnemy(ctx: CanvasRenderingContext2D, options: EnemyRenderOptions) {
+    const size = options.size
+    const pulse = Math.sin(this.animationTime / 200) * 0.05 + 0.95 // 轻微的脉动效果
+    
+    ctx.save()
+    ctx.scale(1, pulse) // 轻微的呼吸效果
+    
+    // 主体外壳：金属银灰到青蓝的渐变，弱化“肉感”
+    const eggGradient = this.createGradient(ctx, '#A0AEC0', '#4FD1C5', 0, -size*0.5, 0, size*0.5)
+    ctx.fillStyle = eggGradient
+    ctx.beginPath()
+    ctx.ellipse(0, 0, size * 0.4, size * 0.5, 0, 0, Math.PI * 2)
+    ctx.fill()
+    
+    // 高光（顶部）— 冷色高光
+    const highlightGradient = this.createGradient(ctx, '#E6FFFA', 'transparent', 0, -size*0.5, 0, -size*0.2)
+    ctx.fillStyle = highlightGradient
+    ctx.globalAlpha = 0.6
+    ctx.beginPath()
+    ctx.ellipse(0, -size*0.25, size * 0.3, size * 0.15, 0, 0, Math.PI * 2)
+    ctx.fill()
+    ctx.globalAlpha = 1
+    
+    // 阴影（左侧）
+    ctx.fillStyle = '#2D3748'
+    ctx.globalAlpha = 0.4
+    ctx.beginPath()
+    ctx.ellipse(-size*0.15, 0, size * 0.15, size * 0.4, 0, 0, Math.PI * 2)
+    ctx.fill()
+    ctx.globalAlpha = 1
+    
+    // 简化表面细节：用科技风网格线替代裂纹
+    ctx.strokeStyle = 'rgba(79, 209, 197, 0.45)' // 青蓝网格
+    ctx.lineWidth = 1.2
+    for (let i = 0; i < 2; i++) {
+      const y = -size*0.2 + i * size*0.25
+      ctx.beginPath()
+      ctx.ellipse(0, y, size * 0.34, 0.6, 0, 0, Math.PI * 2)
+      ctx.stroke()
+    }
+    
+    // 表面指示灯点阵（替代“斑点”）
+    ctx.fillStyle = '#81E6D9'
+    ctx.globalAlpha = 0.6
+    for (let i = 0; i < 5; i++) {
+      const angle = (i / 5) * Math.PI * 2
+      const dotX = Math.cos(angle) * size * 0.26
+      const dotY = Math.sin(angle) * size * 0.18
+      ctx.beginPath()
+      ctx.arc(dotX, dotY, 1.2, 0, Math.PI * 2)
+      ctx.fill()
+    }
+    ctx.globalAlpha = 1
+    
+    // 孵化倒计时效果（接近孵化时闪烁和脉动）
+    const enemy = options as any
+    if (enemy.hatchTime) {
+      const timeUntilHatch = enemy.hatchTime - Date.now()
+      if (timeUntilHatch < 2000 && timeUntilHatch > 0) {
+        // 接近孵化时，添加柔和的青色能量脉冲，替代强烈红光
+        const flashIntensity = (2000 - timeUntilHatch) / 2000
+        const flashPulse = Math.sin(this.animationTime / 120) * 0.5 + 0.5
+        ctx.strokeStyle = '#4FD1C5'
+        ctx.lineWidth = 2
+        ctx.shadowColor = '#4FD1C5'
+        ctx.shadowBlur = 3 * flashIntensity
+        ctx.globalAlpha = flashIntensity * 0.7 * flashPulse
+        ctx.beginPath()
+        ctx.ellipse(0, 0, size * 0.45 + flashIntensity * 4, size * 0.55 + flashIntensity * 4, 0, 0, Math.PI * 2)
+        ctx.stroke()
+        ctx.globalAlpha = 1
+        ctx.shadowBlur = 0
+      }
+    }
+    
+    ctx.restore()
+  }
+
   private drawBugEnemy(ctx: CanvasRenderingContext2D, options: EnemyRenderOptions) {
     const size = options.size
     const scuttle = Math.sin(this.animationTime / 120) * 1.5
@@ -373,37 +716,103 @@ export class EnemyVisualSystem {
     ctx.save()
     ctx.translate(0, scuttle)
 
-    // 绘制机械虫族主体 - 装甲外壳
-    const shellGradient = this.createGradient(ctx, '#4A6741', '#2F4F2F', 0, -size*0.4, 0, size*0.4)
+    // 超精细化机械虫族主体 - 多层装甲外壳
+    const bodyWidth = size * 0.7
+    const bodyHeight = size * 0.5
+    
+    // 主体外壳基础层（带渐变）
+    const shellGradient = this.createGradient(ctx, '#5A7751', '#4A6741', 0, -size*0.4, 0, size*0.4)
     ctx.fillStyle = shellGradient
     ctx.beginPath()
     ctx.ellipse(0, 0, size * 0.35, size * 0.25, 0, 0, Math.PI * 2)
     ctx.fill()
-
-    // 装甲分节线
-    ctx.strokeStyle = '#68D391'
-    ctx.lineWidth = 1
+    
+    // 外壳阴影（左侧）
+    ctx.fillStyle = '#2F4F2F'
+    ctx.globalAlpha = 0.6
     ctx.beginPath()
-    for (let i = 0; i < 3; i++) {
-      const y = -size * 0.15 + i * size * 0.15
-      ctx.moveTo(-size * 0.3, y)
-      ctx.lineTo(size * 0.3, y)
+    ctx.ellipse(-size*0.15, 0, size * 0.12, size * 0.22, 0, 0, Math.PI * 2)
+    ctx.fill()
+    ctx.globalAlpha = 1
+    
+    // 外壳高光（顶部和右侧，多层）
+    const shellHighlight = this.createGradient(ctx, '#68D391', 'transparent', 0, -size*0.3, 0, -size*0.1)
+    ctx.fillStyle = shellHighlight
+    ctx.globalAlpha = 0.5
+    ctx.beginPath()
+    ctx.ellipse(0, -size*0.2, size * 0.3, size * 0.1, 0, 0, Math.PI * 2)
+    ctx.fill()
+    ctx.globalAlpha = 0.3
+    ctx.beginPath()
+    ctx.ellipse(0, -size*0.25, size * 0.25, size * 0.06, 0, 0, Math.PI * 2)
+    ctx.fill()
+    ctx.globalAlpha = 1
+    
+    const rightHighlight = this.createGradient(ctx, '#68D391', 'transparent', size*0.3, -size*0.2, size*0.3, size*0.2)
+    ctx.fillStyle = rightHighlight
+    ctx.globalAlpha = 0.4
+    ctx.beginPath()
+    ctx.ellipse(size*0.25, 0, size * 0.08, size * 0.2, 0, 0, Math.PI * 2)
+    ctx.fill()
+    ctx.globalAlpha = 1
+    
+    // 外壳纹理（细微划痕）
+    ctx.strokeStyle = '#2F4F2F'
+    ctx.lineWidth = 0.5
+    ctx.globalAlpha = 0.3
+    for (let i = 0; i < 6; i++) {
+      const y = -size*0.2 + i * size*0.08
+      const xOffset = Math.sin(i * 0.5) * 2
+      ctx.beginPath()
+      ctx.moveTo(-size*0.3 + xOffset, y)
+      ctx.lineTo(size*0.3 + xOffset, y + 0.5)
+      ctx.stroke()
     }
-    ctx.stroke()
+    ctx.globalAlpha = 1
 
-    // 生物发光斑点 - 对称排列
-    ctx.fillStyle = '#68D391'
+    // 精细化装甲分节线（带发光效果）
+    ctx.strokeStyle = '#68D391'
+    ctx.lineWidth = 2
     ctx.shadowColor = '#68D391'
     ctx.shadowBlur = 3
+    for (let i = 0; i < 3; i++) {
+      const y = -size * 0.15 + i * size * 0.15
+      ctx.beginPath()
+      ctx.moveTo(-size * 0.3, y)
+      ctx.lineTo(size * 0.3, y)
+      ctx.stroke()
+    }
+    ctx.shadowBlur = 0
+
+    // 精细化生物发光斑点（多层发光）
     for (let i = 0; i < 4; i++) {
       const angle = (i / 4) * Math.PI * 2
       const spotX = Math.cos(angle) * size * 0.2
-      const spotY = Math.sin(angle) * size * 0.12
+      const spotY = Math.sin(angle) * size * 0.15
+      
+      // 外圈发光
+      ctx.fillStyle = '#68D391'
+      ctx.shadowColor = '#68D391'
+      ctx.shadowBlur = 4
       ctx.beginPath()
-      ctx.arc(spotX, spotY, 2, 0, Math.PI * 2)
+      ctx.arc(spotX, spotY, 3, 0, Math.PI * 2)
       ctx.fill()
+      
+      // 内圈高亮
+      ctx.fillStyle = '#A7F3D0'
+      ctx.shadowBlur = 2
+      ctx.beginPath()
+      ctx.arc(spotX, spotY, 1.5, 0, Math.PI * 2)
+      ctx.fill()
+      
+      // 核心亮点
+      ctx.fillStyle = '#FFFFFF'
+      ctx.shadowBlur = 1
+      ctx.beginPath()
+      ctx.arc(spotX, spotY, 0.8, 0, Math.PI * 2)
+      ctx.fill()
+      ctx.shadowBlur = 0
     }
-    ctx.shadowBlur = 0
 
     // 复眼系统 - 对称设计
     ctx.fillStyle = '#2D3748'
@@ -1306,39 +1715,235 @@ export class EnemyVisualSystem {
     ctx.save()
     ctx.translate(0, breathe)
 
-    // === 主体：重装机甲 - 更协调的流线型设计 ===
-    // 主身体（使用圆角矩形，更协调）
+    // === 超精细化主体：重装机甲 - 更协调的流线型设计 ===
+    // 主身体基础层（使用圆角矩形，更协调）
     const bodyGradient = ctx.createLinearGradient(0, -size*0.6, 0, size*0.4)
-    bodyGradient.addColorStop(0, '#4A4A4A') // 顶部较亮
-    bodyGradient.addColorStop(0.5, '#2F2F2F') // 中间
+    bodyGradient.addColorStop(0, '#5A5A5A') // 顶部较亮
+    bodyGradient.addColorStop(0.3, '#4A4A4A')
+    bodyGradient.addColorStop(0.6, '#2F2F2F') // 中间
     bodyGradient.addColorStop(1, '#1A1A1A') // 底部较暗
     ctx.fillStyle = bodyGradient
     this.drawRoundedRect(ctx, -size*0.25, -size*0.5, size*0.5, size*1.0, size*0.08)
+    
+    // 主体阴影（左侧，多层）
+    ctx.fillStyle = '#1A1A1A'
+    ctx.globalAlpha = 0.7
+    this.drawRoundedRect(ctx, -size*0.25, -size*0.5, size*0.08, size*1.0, size*0.08)
+    ctx.globalAlpha = 0.4
+    this.drawRoundedRect(ctx, -size*0.24, -size*0.49, size*0.04, size*0.98, size*0.06)
+    ctx.globalAlpha = 1
+    
+    // 主体高光（顶部和右侧，多层）
+    const topHighlightGradient = ctx.createLinearGradient(0, -size*0.6, 0, -size*0.3)
+    topHighlightGradient.addColorStop(0, '#7A7A7A')
+    topHighlightGradient.addColorStop(1, 'transparent')
+    ctx.fillStyle = topHighlightGradient
+    ctx.globalAlpha = 0.6
+    this.drawRoundedRect(ctx, -size*0.23, -size*0.5, size*0.46, size*0.2, size*0.06)
+    ctx.globalAlpha = 1
+    
+    const rightHighlightGradient = ctx.createLinearGradient(size*0.22, -size*0.4, size*0.22, size*0.3)
+    rightHighlightGradient.addColorStop(0, '#6A6A6A')
+    rightHighlightGradient.addColorStop(1, 'transparent')
+    ctx.fillStyle = rightHighlightGradient
+    ctx.globalAlpha = 0.5
+    this.drawRoundedRect(ctx, size*0.18, -size*0.4, size*0.07, size*0.7, size*0.04)
+    ctx.globalAlpha = 1
+    
+    // 金属质感纹理（细微划痕）
+    ctx.strokeStyle = '#1A1A1A'
+    ctx.lineWidth = 0.8
+    ctx.globalAlpha = 0.3
+    for (let i = 0; i < 12; i++) {
+      const y = -size*0.45 + i * size*0.08
+      const xOffset = Math.sin(i * 0.3) * 3
+      ctx.beginPath()
+      ctx.moveTo(-size*0.23 + xOffset, y)
+      ctx.lineTo(size*0.23 + xOffset, y + 1)
+      ctx.stroke()
+    }
+    ctx.globalAlpha = 1
+    
+    // 装甲板接缝线（精细）
+    ctx.strokeStyle = '#1A1A1A'
+    ctx.lineWidth = 1.5
+    ctx.globalAlpha = 0.6
+    // 垂直接缝
+    ctx.beginPath()
+    ctx.moveTo(-size*0.15, -size*0.5)
+    ctx.lineTo(-size*0.15, size*0.4)
+    ctx.moveTo(size*0.15, -size*0.5)
+    ctx.lineTo(size*0.15, size*0.4)
+    ctx.stroke()
+    // 水平接缝
+    for (let i = 0; i < 5; i++) {
+      const y = -size*0.4 + i * size*0.2
+      ctx.beginPath()
+      ctx.moveTo(-size*0.24, y)
+      ctx.lineTo(size*0.24, y)
+      ctx.stroke()
+    }
+    ctx.globalAlpha = 1
 
-    // 胸部装甲板（更精致的层次）
-    ctx.fillStyle = this.createGradient(ctx, '#6B6B6B', '#4A4A4A', 0, -size*0.3, 0, size*0.1)
+    // 超精细化胸部装甲板（更精致的层次，多层结构）
+    // 外层装甲板
+    ctx.fillStyle = this.createGradient(ctx, '#7B7B7B', '#6B6B6B', 0, -size*0.3, 0, size*0.1)
     this.drawRoundedRect(ctx, -size*0.22, -size*0.3, size*0.44, size*0.4, size*0.06)
     
-    // 中央能源核心（更明显）
-    const corePulse = Math.sin(this.animationTime / 300) * 0.3 + 1.0
-    ctx.fillStyle = '#FF4444'
-    ctx.shadowColor = '#FF4444'
-    ctx.shadowBlur = 12
-    ctx.beginPath()
-    ctx.arc(0, -size*0.05, 6 * corePulse, 0, Math.PI * 2)
-    ctx.fill()
-    ctx.shadowBlur = 0
+    // 外层装甲板高光
+    ctx.fillStyle = '#9A9A9A'
+    ctx.globalAlpha = 0.4
+    this.drawRoundedRect(ctx, -size*0.21, -size*0.3, size*0.42, size*0.15, size*0.05)
+    ctx.globalAlpha = 1
     
-    // 核心外环
-    ctx.strokeStyle = '#FF8888'
+    // 中层装甲板
+    ctx.fillStyle = this.createGradient(ctx, '#6B6B6B', '#4A4A4A', 0, -size*0.28, 0, size*0.08)
+    this.drawRoundedRect(ctx, -size*0.21, -size*0.28, size*0.42, size*0.36, size*0.05)
+    
+    // 内层装甲板
+    ctx.fillStyle = this.createGradient(ctx, '#5A5A5A', '#3A3A3A', 0, -size*0.26, 0, size*0.06)
+    this.drawRoundedRect(ctx, -size*0.2, -size*0.26, size*0.4, size*0.32, size*0.04)
+    
+    // 装甲板细节线条和铆钉
+    ctx.strokeStyle = '#2A2A2A'
+    ctx.lineWidth = 1.5
+    for (let i = 0; i < 3; i++) {
+      const y = -size*0.2 + i * size*0.15
+      ctx.beginPath()
+      ctx.moveTo(-size*0.19, y)
+      ctx.lineTo(size*0.19, y)
+      ctx.stroke()
+      
+      // 线条高光
+      ctx.strokeStyle = '#8A8A8A'
+      ctx.lineWidth = 0.5
+      ctx.globalAlpha = 0.4
+      ctx.beginPath()
+      ctx.moveTo(-size*0.19, y - 0.5)
+      ctx.lineTo(size*0.19, y - 0.5)
+      ctx.stroke()
+      ctx.globalAlpha = 1
+      ctx.strokeStyle = '#2A2A2A'
+      ctx.lineWidth = 1.5
+      
+      // 铆钉装饰（多层）
+      // 左铆钉
+      ctx.fillStyle = '#1A1A1A'
+      ctx.beginPath()
+      ctx.arc(-size*0.17, y + 0.5, 1.5, 0, Math.PI * 2)
+      ctx.fill()
+      const rivetGradient = this.createGradient(ctx, '#5A5A5A', '#3A3A3A', -size*0.17, y - 1.5, -size*0.17, y + 1.5)
+      ctx.fillStyle = rivetGradient
+      ctx.beginPath()
+      ctx.arc(-size*0.17, y, 1.2, 0, Math.PI * 2)
+      ctx.fill()
+      ctx.fillStyle = '#7A7A7A'
+      ctx.globalAlpha = 0.6
+      ctx.beginPath()
+      ctx.arc(-size*0.17, y - 0.4, 0.6, 0, Math.PI * 2)
+      ctx.fill()
+      ctx.globalAlpha = 1
+      
+      // 右铆钉
+      ctx.fillStyle = '#1A1A1A'
+      ctx.beginPath()
+      ctx.arc(size*0.17, y + 0.5, 1.5, 0, Math.PI * 2)
+      ctx.fill()
+      ctx.fillStyle = rivetGradient
+      ctx.beginPath()
+      ctx.arc(size*0.17, y, 1.2, 0, Math.PI * 2)
+      ctx.fill()
+      ctx.fillStyle = '#7A7A7A'
+      ctx.globalAlpha = 0.6
+      ctx.beginPath()
+      ctx.arc(size*0.17, y - 0.4, 0.6, 0, Math.PI * 2)
+      ctx.fill()
+      ctx.globalAlpha = 1
+    }
+    
+    // 超精细化中央能源核心（多层发光效果）
+    const corePulse = Math.sin(this.animationTime / 300) * 0.3 + 1.0
+    // 最外圈能量环
+    ctx.strokeStyle = '#FF4444'
+    ctx.lineWidth = 2.5
+    ctx.shadowColor = '#FF4444'
+    ctx.shadowBlur = 15
+    ctx.globalAlpha = 0.5
+    ctx.beginPath()
+    ctx.arc(0, -size*0.05, 10, 0, Math.PI * 2)
+    ctx.stroke()
+    ctx.globalAlpha = 1
+    
+    // 外圈能量环（主环）
+    ctx.strokeStyle = '#FF4444'
     ctx.lineWidth = 2
+    ctx.shadowBlur = 12
+    ctx.globalAlpha = corePulse * 0.8
     ctx.beginPath()
     ctx.arc(0, -size*0.05, 8, 0, Math.PI * 2)
     ctx.stroke()
-
-    // 装甲条纹装饰（更精致的细节）
-    ctx.strokeStyle = '#FF4444'
+    
+    // 中圈能量（多层渐变）
+    const coreGradient = ctx.createRadialGradient(0, -size*0.05, 0, 0, -size*0.05, 6)
+    coreGradient.addColorStop(0, '#FFFFFF')
+    coreGradient.addColorStop(0.3, '#FF8888')
+    coreGradient.addColorStop(0.7, '#FF4444')
+    coreGradient.addColorStop(1, '#FF444480')
+    ctx.fillStyle = coreGradient
+    ctx.shadowBlur = 10
+    ctx.globalAlpha = corePulse
+    ctx.beginPath()
+    ctx.arc(0, -size*0.05, 6 * corePulse, 0, Math.PI * 2)
+    ctx.fill()
+    
+    // 内核高亮
+    ctx.fillStyle = '#FF8888'
+    ctx.shadowBlur = 8
+    ctx.beginPath()
+    ctx.arc(0, -size*0.05, 4 * corePulse, 0, Math.PI * 2)
+    ctx.fill()
+    
+    // 核心白点
+    ctx.fillStyle = '#FFFFFF'
+    ctx.shadowBlur = 6
+    ctx.beginPath()
+    ctx.arc(0, -size*0.05, 2.5 * corePulse, 0, Math.PI * 2)
+    ctx.fill()
+    
+    // 核心超亮点（闪烁）
+    const sparkle = Math.sin(this.animationTime / 100) > 0.5
+    if (sparkle) {
+      ctx.fillStyle = '#FFFFFF'
+      ctx.shadowBlur = 4
+      ctx.beginPath()
+      ctx.arc(0, -size*0.05, 1.5 * corePulse, 0, Math.PI * 2)
+      ctx.fill()
+    }
+    ctx.globalAlpha = 1
+    ctx.shadowBlur = 0
+    
+    // 核心外环（多层）
+    ctx.strokeStyle = '#FF8888'
     ctx.lineWidth = 2
+    ctx.globalAlpha = 0.8
+    ctx.beginPath()
+    ctx.arc(0, -size*0.05, 8, 0, Math.PI * 2)
+    ctx.stroke()
+    ctx.strokeStyle = '#FFAAAA'
+    ctx.lineWidth = 1
+    ctx.globalAlpha = 0.5
+    ctx.beginPath()
+    ctx.arc(0, -size*0.05, 9, 0, Math.PI * 2)
+    ctx.stroke()
+    ctx.globalAlpha = 1
+
+    // 超精细化装甲条纹装饰（更精致的细节，带发光效果）
+    ctx.strokeStyle = '#FF4444'
+    ctx.lineWidth = 2.5
+    ctx.shadowColor = '#FF4444'
+    ctx.shadowBlur = 4
+    const stripePulse = Math.sin(this.animationTime / 400) * 0.2 + 0.8
+    ctx.globalAlpha = stripePulse
     ctx.beginPath()
     ctx.moveTo(-size*0.2, -size*0.2)
     ctx.lineTo(size*0.2, -size*0.2)
@@ -1347,6 +1952,37 @@ export class EnemyVisualSystem {
     ctx.moveTo(-size*0.15, size*0.2)
     ctx.lineTo(size*0.15, size*0.2)
     ctx.stroke()
+    
+    // 条纹高光
+    ctx.strokeStyle = '#FF8888'
+    ctx.lineWidth = 1
+    ctx.shadowBlur = 2
+    ctx.globalAlpha = stripePulse * 0.6
+    ctx.beginPath()
+    ctx.moveTo(-size*0.2, -size*0.2 - 0.5)
+    ctx.lineTo(size*0.2, -size*0.2 - 0.5)
+    ctx.moveTo(-size*0.2, 0 - 0.5)
+    ctx.lineTo(size*0.2, 0 - 0.5)
+    ctx.moveTo(-size*0.15, size*0.2 - 0.5)
+    ctx.lineTo(size*0.15, size*0.2 - 0.5)
+    ctx.stroke()
+    ctx.globalAlpha = 1
+    ctx.shadowBlur = 0
+    
+    // 条纹装饰点
+    ctx.fillStyle = '#FF4444'
+    ctx.shadowColor = '#FF4444'
+    ctx.shadowBlur = 3
+    ctx.globalAlpha = stripePulse * 0.7
+    for (let i = 0; i < 5; i++) {
+      const x = -size*0.18 + i * size*0.09
+      ctx.beginPath()
+      ctx.arc(x, -size*0.2, 1, 0, Math.PI * 2)
+      ctx.arc(x, 0, 1, 0, Math.PI * 2)
+      ctx.fill()
+    }
+    ctx.globalAlpha = 1
+    ctx.shadowBlur = 0
 
     // === 头部：流线型头盔 ===
     const headGradient = ctx.createLinearGradient(0, -size*0.6, 0, -size*0.4)
@@ -1523,104 +2159,327 @@ export class EnemyVisualSystem {
     ctx.save()
     ctx.translate(0, pulse)
 
-    // === 主体：巨大虫巢（椭圆形，类似蜂巢）===
-    // 外层深紫几丁质壳
-    ctx.fillStyle = '#4B0082'
-    ctx.beginPath(); ctx.ellipse(0, 0, size*0.45, size*0.55, 0, 0, Math.PI*2); ctx.fill()
+    // === 超精细化主体：巨大虫巢（椭圆形，类似蜂巢）===
+    // 外层深紫几丁质壳（多层渐变）
+    const shellGradient = this.createGradient(ctx, '#6B00A8', '#4B0082', 0, -size*0.55, 0, size*0.55)
+    ctx.fillStyle = shellGradient
+    ctx.beginPath()
+    ctx.ellipse(0, 0, size*0.45, size*0.55, 0, 0, Math.PI*2)
+    ctx.fill()
     
-    // 内层高光（顶部）
-    ctx.fillStyle = '#6B00A8'
-    ctx.beginPath(); ctx.ellipse(0, -size*0.15, size*0.42, size*0.25, 0, 0, Math.PI*2); ctx.fill()
+    // 外层阴影（左侧）
+    ctx.fillStyle = '#2E0055'
+    ctx.globalAlpha = 0.6
+    ctx.beginPath()
+    ctx.ellipse(-size*0.2, 0, size*0.15, size*0.5, 0, 0, Math.PI*2)
+    ctx.fill()
+    ctx.globalAlpha = 1
     
-    // 虫巢纹理（六边形蜂窝结构暗示）
+    // 外层高光（顶部和右侧）
+    const topHighlightGradient = this.createGradient(ctx, '#8B20C8', 'transparent', 0, -size*0.55, 0, -size*0.2)
+    ctx.fillStyle = topHighlightGradient
+    ctx.globalAlpha = 0.5
+    ctx.beginPath()
+    ctx.ellipse(0, -size*0.3, size*0.4, size*0.25, 0, 0, Math.PI*2)
+    ctx.fill()
+    ctx.globalAlpha = 1
+    
+    const rightHighlightGradient = this.createGradient(ctx, '#8B20C8', 'transparent', size*0.35, -size*0.3, size*0.35, size*0.3)
+    ctx.fillStyle = rightHighlightGradient
+    ctx.globalAlpha = 0.4
+    ctx.beginPath()
+    ctx.ellipse(size*0.3, 0, size*0.1, size*0.4, 0, 0, Math.PI*2)
+    ctx.fill()
+    ctx.globalAlpha = 1
+    
+    // 内层高光（顶部，更亮）
+    ctx.fillStyle = this.createGradient(ctx, '#8B20C8', '#6B00A8', 0, -size*0.2, 0, size*0.1)
+    ctx.beginPath()
+    ctx.ellipse(0, -size*0.15, size*0.42, size*0.25, 0, 0, Math.PI*2)
+    ctx.fill()
+    
+    // 超精细化虫巢纹理（六边形蜂窝结构，多层细节）
     ctx.strokeStyle = '#2E0055'
-    ctx.lineWidth = 2
+    ctx.lineWidth = 2.5
+    ctx.globalAlpha = 0.7
     for (let i=0;i<3;i++) {
       for (let j=0;j<4;j++) {
         const hexX = -size*0.3 + i*size*0.3
         const hexY = -size*0.3 + j*size*0.2
+        // 外圈
         ctx.beginPath()
-        ctx.arc(hexX, hexY, 8, 0, Math.PI*2)
+        ctx.arc(hexX, hexY, 10, 0, Math.PI*2)
+        ctx.stroke()
+        // 内圈
+        ctx.strokeStyle = '#4B0082'
+        ctx.lineWidth = 1.5
+        ctx.beginPath()
+        ctx.arc(hexX, hexY, 6, 0, Math.PI*2)
+        ctx.stroke()
+        // 中心点
+        ctx.fillStyle = '#6B00A8'
+        ctx.beginPath()
+        ctx.arc(hexX, hexY, 2, 0, Math.PI*2)
+        ctx.fill()
+        ctx.strokeStyle = '#2E0055'
+        ctx.lineWidth = 2.5
+      }
+    }
+    ctx.globalAlpha = 1
+    
+    // 蜂窝连接线（精细）
+    ctx.strokeStyle = '#3A0066'
+    ctx.lineWidth = 1
+    ctx.globalAlpha = 0.5
+    for (let i=0;i<2;i++) {
+      for (let j=0;j<3;j++) {
+        const x1 = -size*0.3 + i*size*0.3
+        const y1 = -size*0.3 + j*size*0.2
+        const x2 = -size*0.3 + (i+1)*size*0.3
+        const y2 = -size*0.3 + j*size*0.2
+        ctx.beginPath()
+        ctx.moveTo(x1, y1)
+        ctx.lineTo(x2, y2)
         ctx.stroke()
       }
     }
+    ctx.globalAlpha = 1
 
-    // === 半透明腹部（可见虫卵流动）===
-    ctx.globalAlpha = 0.35
+    // === 精细化的能量核心区域（减少猎奇感，改为正常的能量核心）===
+    // 能量核心外层（带渐变，更正常的设计）
+    const coreGradient = this.createGradient(ctx, '#00D4FF', '#00AAFF', 0, size*0.1, 0, size*0.3)
+    ctx.globalAlpha = 0.5
+    ctx.fillStyle = coreGradient
     const flow = Math.sin(this.animationTime / 400)
-    ctx.fillStyle = '#39FF14'
-    ctx.beginPath(); ctx.ellipse(0, size*0.1, size*0.38, size*0.35 + flow*3, 0, 0, Math.PI*2); ctx.fill()
+    ctx.beginPath()
+    ctx.ellipse(0, size*0.15, size*0.32, size*0.25 + flow*2, 0, 0, Math.PI*2)
+    ctx.fill()
+    
+    // 能量核心内层（更透明）
+    ctx.globalAlpha = 0.3
+    ctx.fillStyle = '#00AAFF'
+    ctx.beginPath()
+    ctx.ellipse(0, size*0.16, size*0.28, size*0.2 + flow*1.5, 0, 0, Math.PI*2)
+    ctx.fill()
     ctx.globalAlpha = 1
     
-    // 虫卵（发光绿色，在腹部流动）
-    ctx.fillStyle = '#39FF14'
-    ctx.shadowColor = '#39FF14'
-    ctx.shadowBlur = 8
-    for (let i=0;i<9;i++) { 
-      const phase = (i/9)*Math.PI*2 + this.animationTime/600
-      const eggX = Math.cos(phase)*size*0.25
-      const eggY = size*0.1 + Math.sin(phase)*size*0.15 + flow*5
-      ctx.beginPath(); ctx.arc(eggX, eggY, 5, 0, Math.PI*2); ctx.fill() 
+    // 精细化的能量节点（减少数量，更正常的设计）
+    for (let i=0;i<5;i++) { 
+      const phase = (i/5)*Math.PI*2 + this.animationTime/600
+      const nodeX = Math.cos(phase)*size*0.2
+      const nodeY = size*0.15 + Math.sin(phase)*size*0.12 + flow*3
+      
+      // 能量节点外圈发光
+      ctx.fillStyle = '#00D4FF'
+      ctx.shadowColor = '#00D4FF'
+      ctx.shadowBlur = 8
+      ctx.beginPath()
+      ctx.arc(nodeX, nodeY, 5, 0, Math.PI*2)
+      ctx.fill()
+      
+      // 能量节点内核
+      ctx.fillStyle = '#FFFFFF'
+      ctx.shadowBlur = 4
+      ctx.beginPath()
+      ctx.arc(nodeX, nodeY, 2.5, 0, Math.PI*2)
+      ctx.fill()
     }
     ctx.shadowBlur = 0
-
-    // === 头部：简化口器（小开口）===
-    ctx.fillStyle = '#2E0033'
-    ctx.beginPath(); ctx.arc(0, -size*0.5, size*0.12, 0, Math.PI*2); ctx.fill()
-    // 黏液滴
-    ctx.fillStyle = 'rgba(57,255,20,0.7)'
-    for (let i=0;i<2;i++) {
-      const dropY = -size*0.35 + i*12 + flow*8
-      ctx.beginPath(); ctx.arc(0, dropY, 3, 0, Math.PI*2); ctx.fill()
+    
+    // 能量连接线（更精细的设计）
+    ctx.strokeStyle = '#00D4FF'
+    ctx.lineWidth = 1.5
+    ctx.globalAlpha = 0.5
+    ctx.shadowColor = '#00D4FF'
+    ctx.shadowBlur = 3
+    for (let i=0;i<4;i++) {
+      const phase1 = (i/5)*Math.PI*2 + this.animationTime/600
+      const phase2 = ((i+1)/5)*Math.PI*2 + this.animationTime/600
+      const x1 = Math.cos(phase1)*size*0.2
+      const y1 = size*0.15 + Math.sin(phase1)*size*0.12 + flow*3
+      const x2 = Math.cos(phase2)*size*0.2
+      const y2 = size*0.15 + Math.sin(phase2)*size*0.12 + flow*3
+      ctx.beginPath()
+      ctx.moveTo(x1, y1)
+      ctx.lineTo(x2, y2)
+      ctx.stroke()
     }
+    ctx.globalAlpha = 1
+    ctx.shadowBlur = 0
 
-    // === 复眼（6只，紧凑排列在头部）===
-    ctx.fillStyle = '#39FF14'
-    ctx.shadowColor = '#39FF14'
+    // === 头部：精细化的机械头部（减少猎奇感）===
+    // 头部主体（圆角矩形，更正常的设计）
+    const headGradient = this.createGradient(ctx, '#5A0089', '#4B0082', 0, -size*0.5, 0, -size*0.35)
+    ctx.fillStyle = headGradient
+    this.drawRoundedRect(ctx, -size*0.15, -size*0.5, size*0.3, size*0.15, size*0.03)
+    
+    // 头部高光
+    ctx.fillStyle = '#7A20A8'
+    ctx.globalAlpha = 0.4
+    this.drawRoundedRect(ctx, -size*0.14, -size*0.5, size*0.28, size*0.06, size*0.02)
+    ctx.globalAlpha = 1
+    
+    // 头部装饰线条
+    ctx.strokeStyle = '#3A0066'
+    ctx.lineWidth = 1.5
+    ctx.globalAlpha = 0.6
+    ctx.beginPath()
+    ctx.moveTo(-size*0.12, -size*0.42)
+    ctx.lineTo(size*0.12, -size*0.42)
+    ctx.stroke()
+    ctx.globalAlpha = 1
+
+    // === 精细化的传感器阵列（减少猎奇感，改为正常的机械传感器）===
+    // 主传感器（中央，更大更明显）
+    const sensorPulse = Math.sin(this.animationTime / 300) * 0.2 + 0.8
+    // 主传感器外圈
+    ctx.fillStyle = '#00D4FF'
+    ctx.shadowColor = '#00D4FF'
+    ctx.shadowBlur = 10
+    ctx.globalAlpha = sensorPulse * 0.7
+    ctx.beginPath()
+    ctx.arc(0, -size*0.42, 8, 0, Math.PI*2)
+    ctx.fill()
+    
+    // 主传感器中圈
+    ctx.fillStyle = '#00AAFF'
     ctx.shadowBlur = 6
-    for (let i=0;i<6;i++){ 
-      const ex = -size*0.15 + i*(size*0.06)
-      const ey = -size*0.52
-      ctx.beginPath(); ctx.arc(ex, ey, 4, 0, Math.PI*2); ctx.fill() 
+    ctx.globalAlpha = sensorPulse
+    ctx.beginPath()
+    ctx.arc(0, -size*0.42, 6, 0, Math.PI*2)
+    ctx.fill()
+    
+    // 主传感器内核
+    ctx.fillStyle = '#FFFFFF'
+    ctx.shadowBlur = 4
+    ctx.beginPath()
+    ctx.arc(0, -size*0.42, 4, 0, Math.PI*2)
+    ctx.fill()
+    
+    // 辅助传感器（两侧，较小）
+    for (let i=0;i<2;i++){ 
+      const ex = (i === 0 ? -1 : 1) * size*0.1
+      const ey = -size*0.42
+      const eyePulse = Math.sin(this.animationTime / 300 + i) * 0.2 + 0.8
+      
+      // 辅助传感器外圈
+      ctx.fillStyle = '#00D4FF'
+      ctx.shadowBlur = 6
+      ctx.globalAlpha = eyePulse * 0.6
+      ctx.beginPath()
+      ctx.arc(ex, ey, 4, 0, Math.PI*2)
+      ctx.fill()
+      
+      // 辅助传感器内核
+      ctx.fillStyle = '#00AAFF'
+      ctx.shadowBlur = 3
+      ctx.globalAlpha = eyePulse
+      ctx.beginPath()
+      ctx.arc(ex, ey, 2.5, 0, Math.PI*2)
+      ctx.fill()
     }
+    ctx.globalAlpha = 1
     ctx.shadowBlur = 0
 
-    // === 3个虫巢出口管道（腹部下方，明显可见）===
-    ctx.fillStyle = '#3A0059'
-    ctx.strokeStyle = '#2E0055'
-    ctx.lineWidth = 2
+    // === 精细化的发射端口（减少猎奇感，改为正常的机械发射口）===
     for (let i=0;i<3;i++){ 
       const px = -size*0.28 + i*size*0.28
       const py = size*0.35
-      // 管道（向下延伸）
-      ctx.fillRect(px-10, py, 20, size*0.18)
-      ctx.strokeRect(px-10, py, 20, size*0.18)
-      // 管道口（发光，间歇性产出）
-      const spawnActive = Math.sin(this.animationTime/500 + i*2) > 0.5
-      if (spawnActive) {
-        ctx.fillStyle = 'rgba(57,255,20,0.8)'
-        ctx.shadowColor = '#39FF14'
-        ctx.shadowBlur = 10
-        ctx.beginPath(); ctx.arc(px, py+size*0.2, 6, 0, Math.PI*2); ctx.fill()
-        ctx.shadowBlur = 0
+      
+      // 发射口外层（带渐变，更正常的设计）
+      const portGradient = this.createGradient(ctx, '#5A0089', '#4A0069', px, py, px, py + size*0.15)
+      ctx.fillStyle = portGradient
+      this.drawRoundedRect(ctx, px-10, py, 20, size*0.15, 3)
+      
+      // 发射口边框（多层）
+      ctx.strokeStyle = '#3A0059'
+      ctx.lineWidth = 2.5
+      this.drawRoundedRect(ctx, px-10, py, 20, size*0.15, 3)
+      ctx.strokeStyle = '#6A00A9'
+      ctx.lineWidth = 1
+      ctx.globalAlpha = 0.6
+      this.drawRoundedRect(ctx, px-9, py+1, 18, size*0.15-2, 2)
+      ctx.globalAlpha = 1
+      
+      // 发射口内层（更暗）
+      ctx.fillStyle = '#2A0049'
+      this.drawRoundedRect(ctx, px-9, py+2, 18, size*0.15-4, 2)
+      
+      // 发射口内部纹理（纵向线条，更精细）
+      ctx.strokeStyle = '#1A0039'
+      ctx.lineWidth = 0.8
+      ctx.globalAlpha = 0.4
+      for (let j=0;j<2;j++) {
+        const lineX = px - 6 + j*12
+        ctx.beginPath()
+        ctx.moveTo(lineX, py+3)
+        ctx.lineTo(lineX, py+size*0.15-3)
+        ctx.stroke()
       }
-      ctx.fillStyle = '#3A0059'
+      ctx.globalAlpha = 1
+      
+      // 发射口能量指示（发光，间歇性，更正常的设计）
+      const spawnActive = Math.sin(this.animationTime/500 + i*2) > 0.5
+      const spawnPulse = Math.sin(this.animationTime/200 + i) * 0.3 + 0.7
+      if (spawnActive) {
+        // 外圈发光
+        ctx.fillStyle = 'rgba(0,212,255,0.8)'
+        ctx.shadowColor = '#00D4FF'
+        ctx.shadowBlur = 10
+        ctx.globalAlpha = spawnPulse * 0.7
+        ctx.beginPath()
+        ctx.arc(px, py+size*0.18, 6, 0, Math.PI*2)
+        ctx.fill()
+        
+        // 内核
+        ctx.fillStyle = '#00AAFF'
+        ctx.shadowBlur = 6
+        ctx.globalAlpha = spawnPulse
+        ctx.beginPath()
+        ctx.arc(px, py+size*0.18, 4, 0, Math.PI*2)
+        ctx.fill()
+        
+        // 核心亮点
+        ctx.fillStyle = '#FFFFFF'
+        ctx.shadowBlur = 3
+        ctx.beginPath()
+        ctx.arc(px, py+size*0.18, 2, 0, Math.PI*2)
+        ctx.fill()
+      }
+      ctx.globalAlpha = 1
+      ctx.shadowBlur = 0
     }
 
-    // === 节肢足（6只，从身体两侧伸出，支撑虫巢）===
-    ctx.strokeStyle = '#4B0082'
-    ctx.lineWidth = 4
-    for (let i=0;i<6;i++) {
-      const legAngle = (i/6)*Math.PI*2
-      const legStartX = Math.cos(legAngle)*size*0.4
-      const legStartY = Math.sin(legAngle)*size*0.45
-      const legEndX = legStartX + Math.cos(legAngle + Math.PI/6)*size*0.2
-      const legEndY = legStartY + Math.sin(legAngle + Math.PI/6)*size*0.2
+    // === 精细化的支撑结构（减少猎奇感，改为正常的机械支撑）===
+    // 支撑臂（4个，更正常的设计）
+    ctx.strokeStyle = '#5A0089'
+    ctx.lineWidth = 5
+    ctx.shadowColor = '#4B0082'
+    ctx.shadowBlur = 4
+    for (let i=0;i<4;i++) {
+      const legAngle = (i/4)*Math.PI*2 + Math.PI/4
+      const legStartX = Math.cos(legAngle)*size*0.35
+      const legStartY = Math.sin(legAngle)*size*0.4
+      const legEndX = legStartX + Math.cos(legAngle)*size*0.18
+      const legEndY = legStartY + Math.sin(legAngle)*size*0.18
       ctx.beginPath()
       ctx.moveTo(legStartX, legStartY)
       ctx.lineTo(legEndX, legEndY)
       ctx.stroke()
+      
+      // 支撑臂关节（更精细）
+      ctx.fillStyle = '#6B00A8'
+      ctx.beginPath()
+      ctx.arc(legStartX, legStartY, 4, 0, Math.PI*2)
+      ctx.fill()
+      ctx.fillStyle = '#8B20C8'
+      ctx.globalAlpha = 0.6
+      ctx.beginPath()
+      ctx.arc(legStartX, legStartY, 2.5, 0, Math.PI*2)
+      ctx.fill()
+      ctx.globalAlpha = 1
     }
+    ctx.shadowBlur = 0
 
     ctx.restore()
   }
@@ -1633,30 +2492,154 @@ export class EnemyVisualSystem {
     ctx.globalAlpha = stealth
     ctx.rotate(lean) // 侧身减少被攻击面积
 
-    // === 修长人形身体（纯黑）===
-    ctx.fillStyle = '#000000'
-    // 躯干
+    // === 超精细化修长人形身体（纯黑，多层细节）===
+    // 躯干基础层（带渐变）
+    const bodyGradient = this.createGradient(ctx, '#1A1A1A', '#000000', 0, -size*0.4, 0, size*0.2)
+    ctx.fillStyle = bodyGradient
     ctx.fillRect(-size*0.08, -size*0.4, size*0.16, size*0.6)
-    // 头部
+    
+    // 躯干阴影（左侧）
+    ctx.fillStyle = '#000000'
+    ctx.globalAlpha = stealth * 0.8
+    ctx.fillRect(-size*0.08, -size*0.4, size*0.04, size*0.6)
+    ctx.globalAlpha = stealth
+    
+    // 躯干高光（顶部和右侧）
+    ctx.fillStyle = '#2A2A2A'
+    ctx.globalAlpha = stealth * 0.4
+    ctx.fillRect(-size*0.07, -size*0.4, size*0.14, size*0.15)
+    ctx.fillRect(size*0.05, -size*0.35, size*0.03, size*0.5)
+    ctx.globalAlpha = stealth
+    
+    // 躯干细节线条
+    ctx.strokeStyle = '#0A0A0A'
+    ctx.lineWidth = 1
+    ctx.globalAlpha = stealth * 0.5
+    for (let i = 0; i < 4; i++) {
+      const y = -size*0.3 + i * size*0.2
+      ctx.beginPath()
+      ctx.moveTo(-size*0.07, y)
+      ctx.lineTo(size*0.07, y)
+      ctx.stroke()
+    }
+    ctx.globalAlpha = stealth
+    
+    // 头部（带渐变）
+    const headGradient = this.createGradient(ctx, '#2A2A2A', '#000000', 0, -size*0.48, 0, -size*0.33)
+    ctx.fillStyle = headGradient
     ctx.fillRect(-size*0.1, -size*0.48, size*0.2, size*0.15)
-    // 左臂（前伸持刀）
+    
+    // 头部高光
+    ctx.fillStyle = '#3A3A3A'
+    ctx.globalAlpha = stealth * 0.3
+    ctx.fillRect(-size*0.09, -size*0.48, size*0.18, size*0.05)
+    ctx.globalAlpha = stealth
+    
+    // 左臂（前伸持刀，带渐变）
+    const leftArmGradient = this.createGradient(ctx, '#1A1A1A', '#000000', -size*0.18, -size*0.15, -size*0.06, -size*0.15)
+    ctx.fillStyle = leftArmGradient
     ctx.fillRect(-size*0.18, -size*0.15, size*0.12, size*0.35)
-    // 右臂（后收持刀）
+    
+    // 右臂（后收持刀，带渐变）
+    const rightArmGradient = this.createGradient(ctx, '#1A1A1A', '#000000', size*0.06, -size*0.1, size*0.18, -size*0.1)
+    ctx.fillStyle = rightArmGradient
     ctx.fillRect(size*0.06, -size*0.1, size*0.12, size*0.3)
-    // 左腿
+    
+    // 左腿（带渐变）
+    const leftLegGradient = this.createGradient(ctx, '#1A1A1A', '#000000', -size*0.1, size*0.2, -size*0.1, size*0.55)
+    ctx.fillStyle = leftLegGradient
     ctx.fillRect(-size*0.1, size*0.2, size*0.08, size*0.35)
-    // 右腿
+    
+    // 右腿（带渐变）
+    const rightLegGradient = this.createGradient(ctx, '#1A1A1A', '#000000', size*0.02, size*0.25, size*0.02, size*0.55)
+    ctx.fillStyle = rightLegGradient
     ctx.fillRect(size*0.02, size*0.25, size*0.08, size*0.3)
 
-    // === 白色面具（无表情）===
-    ctx.fillStyle = '#FFFFFF'
+    // === 超精细化白色面具（无表情，多层结构）===
+    // 面具外层（带渐变）
+    const maskGradient = this.createGradient(ctx, '#FFFFFF', '#E0E0E0', 0, -size*0.46, 0, -size*0.34)
+    ctx.fillStyle = maskGradient
     ctx.fillRect(-size*0.08, -size*0.46, size*0.16, size*0.12)
-    // 只露红眼（发光）
+    
+    // 面具高光
+    ctx.fillStyle = '#FFFFFF'
+    ctx.globalAlpha = stealth * 0.6
+    ctx.fillRect(-size*0.07, -size*0.46, size*0.14, size*0.04)
+    ctx.globalAlpha = stealth
+    
+    // 面具阴影
+    ctx.fillStyle = '#C0C0C0'
+    ctx.globalAlpha = stealth * 0.4
+    ctx.fillRect(-size*0.08, -size*0.38, size*0.16, size*0.04)
+    ctx.globalAlpha = stealth
+    
+    // 面具边框
+    ctx.strokeStyle = '#A0A0A0'
+    ctx.lineWidth = 1
+    ctx.globalAlpha = stealth * 0.6
+    ctx.strokeRect(-size*0.08, -size*0.46, size*0.16, size*0.12)
+    ctx.globalAlpha = stealth
+    
+    // 超精细化红眼（多层发光）
+    const eyePulse = Math.sin(this.animationTime / 250) * 0.2 + 0.8
+    // 左眼外圈
     ctx.fillStyle = '#8B0000'
     ctx.shadowColor = '#8B0000'
+    ctx.shadowBlur = 10
+    ctx.globalAlpha = stealth * eyePulse * 0.7
+    ctx.beginPath()
+    ctx.arc(-size*0.03, -size*0.4, 5, 0, Math.PI*2)
+    ctx.fill()
+    
+    // 左眼中圈
+    ctx.fillStyle = '#AA0000'
     ctx.shadowBlur = 6
-    ctx.beginPath(); ctx.arc(-size*0.03, -size*0.4, 3, 0, Math.PI*2); ctx.fill()
-    ctx.beginPath(); ctx.arc(size*0.03, -size*0.4, 3, 0, Math.PI*2); ctx.fill()
+    ctx.globalAlpha = stealth * eyePulse
+    ctx.beginPath()
+    ctx.arc(-size*0.03, -size*0.4, 3.5, 0, Math.PI*2)
+    ctx.fill()
+    
+    // 左眼内核
+    ctx.fillStyle = '#FF0000'
+    ctx.shadowBlur = 4
+    ctx.beginPath()
+    ctx.arc(-size*0.03, -size*0.4, 2.5, 0, Math.PI*2)
+    ctx.fill()
+    
+    // 左眼高光
+    ctx.fillStyle = '#FFFFFF'
+    ctx.shadowBlur = 2
+    ctx.beginPath()
+    ctx.arc(-size*0.03 - 0.5, -size*0.4 - 0.5, 1, 0, Math.PI*2)
+    ctx.fill()
+    
+    // 右眼（同样处理）
+    ctx.fillStyle = '#8B0000'
+    ctx.shadowBlur = 10
+    ctx.globalAlpha = stealth * eyePulse * 0.7
+    ctx.beginPath()
+    ctx.arc(size*0.03, -size*0.4, 5, 0, Math.PI*2)
+    ctx.fill()
+    
+    ctx.fillStyle = '#AA0000'
+    ctx.shadowBlur = 6
+    ctx.globalAlpha = stealth * eyePulse
+    ctx.beginPath()
+    ctx.arc(size*0.03, -size*0.4, 3.5, 0, Math.PI*2)
+    ctx.fill()
+    
+    ctx.fillStyle = '#FF0000'
+    ctx.shadowBlur = 4
+    ctx.beginPath()
+    ctx.arc(size*0.03, -size*0.4, 2.5, 0, Math.PI*2)
+    ctx.fill()
+    
+    ctx.fillStyle = '#FFFFFF'
+    ctx.shadowBlur = 2
+    ctx.beginPath()
+    ctx.arc(size*0.03 - 0.5, -size*0.4 - 0.5, 1, 0, Math.PI*2)
+    ctx.fill()
+    ctx.globalAlpha = stealth
     ctx.shadowBlur = 0
 
     // === 动态披风（边缘粒子化消散）===
@@ -1736,24 +2719,118 @@ export class EnemyVisualSystem {
     else if (healthPercent <= 0.7) phase = 2
 
     if (phase === 1) {
-      // === 阶段一：混沌巨兽（四足石像鬼）===
+      // === 阶段一：超精细化混沌巨兽（改进的精细建模）===
       const breathe = Math.sin(this.animationTime / 400) * 3
       ctx.translate(0, breathe)
       
-      // 花岗岩灰主体（类似石像鬼）
-      ctx.fillStyle = '#696969'
-      // 身体（粗壮）
-      ctx.fillRect(-size*0.3, -size*0.2, size*0.6, size*0.5)
-      // 前肢
-      ctx.fillRect(-size*0.4, size*0.1, size*0.2, size*0.4)
-      ctx.fillRect(size*0.2, size*0.1, size*0.2, size*0.4)
-      // 后肢
-      ctx.fillRect(-size*0.35, size*0.25, size*0.18, size*0.35)
-      ctx.fillRect(size*0.17, size*0.25, size*0.18, size*0.35)
+      // 超精细化身体渐变（更精细的阴影，多层）
+      const bodyGradient = ctx.createLinearGradient(0, -size*0.3, 0, size*0.4)
+      bodyGradient.addColorStop(0, '#6A6A6A') // 顶部较亮
+      bodyGradient.addColorStop(0.3, '#5A5A5A')
+      bodyGradient.addColorStop(0.6, '#3A3A3A') // 中间
+      bodyGradient.addColorStop(1, '#2A2A2A') // 底部较暗
+      ctx.fillStyle = bodyGradient
       
-      // 头部（尖角）
-      ctx.fillRect(-size*0.2, -size*0.4, size*0.4, size*0.25)
-      // 尖角
+      // 身体主体（圆角矩形，更精细）
+      this.drawRoundedRect(ctx, -size*0.3, -size*0.2, size*0.6, size*0.5, size*0.05)
+      
+      // 身体阴影（左侧，多层）
+      ctx.fillStyle = '#1A1A1A'
+      ctx.globalAlpha = 0.7
+      this.drawRoundedRect(ctx, -size*0.3, -size*0.2, size*0.1, size*0.5, size*0.05)
+      ctx.globalAlpha = 0.4
+      this.drawRoundedRect(ctx, -size*0.29, -size*0.19, size*0.05, size*0.48, size*0.04)
+      ctx.globalAlpha = 1
+      
+      // 身体高光（顶部和右侧，多层）
+      const topHighlightGradient = ctx.createLinearGradient(0, -size*0.3, 0, -size*0.1)
+      topHighlightGradient.addColorStop(0, '#8A8A8A')
+      topHighlightGradient.addColorStop(1, 'transparent')
+      ctx.fillStyle = topHighlightGradient
+      ctx.globalAlpha = 0.6
+      this.drawRoundedRect(ctx, -size*0.28, -size*0.2, size*0.56, size*0.15, size*0.04)
+      ctx.globalAlpha = 1
+      
+      const rightHighlightGradient = ctx.createLinearGradient(size*0.28, -size*0.15, size*0.28, size*0.2)
+      rightHighlightGradient.addColorStop(0, '#7A7A7A')
+      rightHighlightGradient.addColorStop(1, 'transparent')
+      ctx.fillStyle = rightHighlightGradient
+      ctx.globalAlpha = 0.5
+      this.drawRoundedRect(ctx, size*0.23, -size*0.15, size*0.05, size*0.35, size*0.03)
+      ctx.globalAlpha = 1
+      
+      // 金属质感纹理（细微划痕）
+      ctx.strokeStyle = '#1A1A1A'
+      ctx.lineWidth = 0.8
+      ctx.globalAlpha = 0.3
+      for (let i = 0; i < 8; i++) {
+        const y = -size*0.15 + i * size*0.08
+        const xOffset = Math.sin(i * 0.4) * 4
+        ctx.beginPath()
+        ctx.moveTo(-size*0.28 + xOffset, y)
+        ctx.lineTo(size*0.28 + xOffset, y + 1)
+        ctx.stroke()
+      }
+      ctx.globalAlpha = 1
+      
+      // 装甲板接缝线
+      ctx.strokeStyle = '#1A1A1A'
+      ctx.lineWidth = 1.5
+      ctx.globalAlpha = 0.6
+      ctx.beginPath()
+      ctx.moveTo(-size*0.2, -size*0.2)
+      ctx.lineTo(-size*0.2, size*0.2)
+      ctx.moveTo(size*0.2, -size*0.2)
+      ctx.lineTo(size*0.2, size*0.2)
+      ctx.moveTo(-size*0.28, 0)
+      ctx.lineTo(size*0.28, 0)
+      ctx.stroke()
+      ctx.globalAlpha = 1
+      
+      // 前肢（更精细的机械臂设计，减少猎奇感）
+      const frontLegGradient = ctx.createLinearGradient(-size*0.4, size*0.1, -size*0.2, size*0.5)
+      frontLegGradient.addColorStop(0, '#5A5A5A')
+      frontLegGradient.addColorStop(0.5, '#4A4A4A')
+      frontLegGradient.addColorStop(1, '#2A2A2A')
+      ctx.fillStyle = frontLegGradient
+      this.drawRoundedRect(ctx, -size*0.4, size*0.1, size*0.2, size*0.4, size*0.04)
+      this.drawRoundedRect(ctx, size*0.2, size*0.1, size*0.2, size*0.4, size*0.04)
+      
+      // 前肢关节（更精细）
+      ctx.fillStyle = '#3A3A3A'
+      ctx.beginPath()
+      ctx.arc(-size*0.3, size*0.3, 5, 0, Math.PI*2)
+      ctx.arc(size*0.3, size*0.3, 5, 0, Math.PI*2)
+      ctx.fill()
+      
+      // 后肢（更精细的机械臂设计）
+      const backLegGradient = ctx.createLinearGradient(-size*0.35, size*0.25, -size*0.17, size*0.6)
+      backLegGradient.addColorStop(0, '#5A5A5A')
+      backLegGradient.addColorStop(0.5, '#4A4A4A')
+      backLegGradient.addColorStop(1, '#2A2A2A')
+      ctx.fillStyle = backLegGradient
+      this.drawRoundedRect(ctx, -size*0.35, size*0.25, size*0.18, size*0.35, size*0.04)
+      this.drawRoundedRect(ctx, size*0.17, size*0.25, size*0.18, size*0.35, size*0.04)
+      
+      // 后肢关节（更精细）
+      ctx.fillStyle = '#3A3A3A'
+      ctx.beginPath()
+      ctx.arc(-size*0.26, size*0.42, 4, 0, Math.PI*2)
+      ctx.arc(size*0.26, size*0.42, 4, 0, Math.PI*2)
+      ctx.fill()
+      
+      // 头部（更精细的造型）
+      const headGradient = ctx.createLinearGradient(0, -size*0.5, 0, -size*0.15)
+      headGradient.addColorStop(0, '#6A6A6A')
+      headGradient.addColorStop(1, '#4A4A4A')
+      ctx.fillStyle = headGradient
+      this.drawRoundedRect(ctx, -size*0.2, -size*0.4, size*0.4, size*0.25, size*0.04)
+      
+      // 尖角（更精细的渐变）
+      const hornGradient = ctx.createLinearGradient(0, -size*0.5, 0, -size*0.4)
+      hornGradient.addColorStop(0, '#8A8A8A')
+      hornGradient.addColorStop(1, '#5A5A5A')
+      ctx.fillStyle = hornGradient
       ctx.beginPath()
       ctx.moveTo(0, -size*0.5)
       ctx.lineTo(-size*0.15, -size*0.4)
@@ -1761,25 +2838,118 @@ export class EnemyVisualSystem {
       ctx.closePath()
       ctx.fill()
       
-      // 熔岩裂纹（橙红色，随攻击闪烁）
+      // 超精细化熔岩裂纹（橙红色，随攻击闪烁，多层发光）
       const crackBright = Math.sin(this.animationTime / 300) * 0.3 + 0.7
-      ctx.strokeStyle = `rgba(255, 69, 0, ${crackBright})`
+      // 裂纹基础层（较暗）
+      ctx.strokeStyle = `rgba(255, 69, 0, ${crackBright * 0.5})`
       ctx.lineWidth = 3
-      ctx.shadowColor = '#FF4500'
-      ctx.shadowBlur = 6
-      // 裂纹路径
+      ctx.globalAlpha = 0.6
       ctx.beginPath()
       ctx.moveTo(-size*0.25, -size*0.15)
-      ctx.lineTo(-size*0.15, size*0.1)
-      ctx.lineTo(size*0.1, size*0.15)
-      ctx.lineTo(size*0.2, -size*0.1)
+      ctx.quadraticCurveTo(-size*0.1, size*0.05, size*0.1, size*0.15)
+      ctx.quadraticCurveTo(size*0.15, 0, size*0.2, -size*0.1)
+      ctx.stroke()
+      ctx.globalAlpha = 1
+      
+      // 裂纹主层（发光）
+      ctx.strokeStyle = `rgba(255, 69, 0, ${crackBright})`
+      ctx.lineWidth = 2.5
+      ctx.shadowColor = '#FF4500'
+      ctx.shadowBlur = 10
+      ctx.beginPath()
+      ctx.moveTo(-size*0.25, -size*0.15)
+      ctx.quadraticCurveTo(-size*0.1, size*0.05, size*0.1, size*0.15)
+      ctx.quadraticCurveTo(size*0.15, 0, size*0.2, -size*0.1)
+      ctx.stroke()
+      
+      // 裂纹高光层
+      ctx.strokeStyle = `rgba(255, 150, 0, ${crackBright * 0.8})`
+      ctx.lineWidth = 1.5
+      ctx.shadowBlur = 6
+      ctx.beginPath()
+      ctx.moveTo(-size*0.25, -size*0.15)
+      ctx.quadraticCurveTo(-size*0.1, size*0.05, size*0.1, size*0.15)
+      ctx.quadraticCurveTo(size*0.15, 0, size*0.2, -size*0.1)
       ctx.stroke()
       ctx.shadowBlur = 0
       
-      // 眼睛（红色）
+      // 裂纹能量点（沿裂纹分布）
+      ctx.fillStyle = '#FF4500'
+      ctx.shadowColor = '#FF4500'
+      ctx.shadowBlur = 4
+      ctx.globalAlpha = crackBright
+      for (let i = 0; i < 5; i++) {
+        const t = i / 4
+        const x = -size*0.25 + t * size*0.45
+        const y = -size*0.15 + t * size*0.3
+        ctx.beginPath()
+        ctx.arc(x, y, 2, 0, Math.PI*2)
+        ctx.fill()
+      }
+      ctx.globalAlpha = 1
+      ctx.shadowBlur = 0
+      
+      // 超精细化眼睛（红色发光，多层发光）
+      const eyePulse = Math.sin(this.animationTime / 200) * 0.3 + 1.0
+      // 左眼外圈
       ctx.fillStyle = '#FF0000'
-      ctx.beginPath(); ctx.arc(-size*0.08, -size*0.3, 4, 0, Math.PI*2); ctx.fill()
-      ctx.beginPath(); ctx.arc(size*0.08, -size*0.3, 4, 0, Math.PI*2); ctx.fill()
+      ctx.shadowColor = '#FF0000'
+      ctx.shadowBlur = 12
+      ctx.globalAlpha = eyePulse * 0.7
+      ctx.beginPath()
+      ctx.arc(-size*0.08, -size*0.3, 6 * eyePulse, 0, Math.PI*2)
+      ctx.fill()
+      
+      // 左眼中圈
+      ctx.fillStyle = '#FF4444'
+      ctx.shadowBlur = 8
+      ctx.globalAlpha = eyePulse
+      ctx.beginPath()
+      ctx.arc(-size*0.08, -size*0.3, 4.5 * eyePulse, 0, Math.PI*2)
+      ctx.fill()
+      
+      // 左眼内核
+      ctx.fillStyle = '#FF8888'
+      ctx.shadowBlur = 6
+      ctx.beginPath()
+      ctx.arc(-size*0.08, -size*0.3, 3 * eyePulse, 0, Math.PI*2)
+      ctx.fill()
+      
+      // 左眼核心亮点
+      ctx.fillStyle = '#FFFFFF'
+      ctx.shadowBlur = 3
+      ctx.beginPath()
+      ctx.arc(-size*0.08, -size*0.3, 1.5 * eyePulse, 0, Math.PI*2)
+      ctx.fill()
+      
+      // 右眼（同样处理）
+      ctx.fillStyle = '#FF0000'
+      ctx.shadowBlur = 12
+      ctx.globalAlpha = eyePulse * 0.7
+      ctx.beginPath()
+      ctx.arc(size*0.08, -size*0.3, 6 * eyePulse, 0, Math.PI*2)
+      ctx.fill()
+      
+      ctx.fillStyle = '#FF4444'
+      ctx.shadowBlur = 8
+      ctx.globalAlpha = eyePulse
+      ctx.beginPath()
+      ctx.arc(size*0.08, -size*0.3, 4.5 * eyePulse, 0, Math.PI*2)
+      ctx.fill()
+      
+      ctx.fillStyle = '#FF8888'
+      ctx.shadowBlur = 6
+      ctx.beginPath()
+      ctx.arc(size*0.08, -size*0.3, 3 * eyePulse, 0, Math.PI*2)
+      ctx.fill()
+      
+      ctx.fillStyle = '#FFFFFF'
+      ctx.shadowBlur = 3
+      ctx.beginPath()
+      ctx.arc(size*0.08, -size*0.3, 1.5 * eyePulse, 0, Math.PI*2)
+      ctx.fill()
+      ctx.globalAlpha = 1
+      ctx.shadowBlur = 0
 
     } else if (phase === 2) {
       // === 阶段二：混沌织法者（漂浮法球）===
@@ -2864,13 +4034,8 @@ export class EnemyVisualSystem {
       ctx.fillRect(-barWidth/2, yOffset - 6, barWidth * shieldPercent, barHeight)
     }
     
-    // 精英标记（第5关Boss不显示五角星）
-    if (options.isElite && options.type !== 'infantry_captain') {
-      ctx.font = 'bold 12px Arial'
-      ctx.fillStyle = '#FFD700'
-      ctx.textAlign = 'center'
-      ctx.fillText('★', 0, yOffset - 10)
-    }
+    // 移除所有Boss和精英的五角星标记（不再显示）
+    // Boss和精英通过其他视觉元素区分（如颜色、大小、特效等）
   }
 
   private drawStatusEffects(ctx: CanvasRenderingContext2D, effects: any[], size: number) {

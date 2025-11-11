@@ -31,13 +31,6 @@
       <button class="btn btn-secondary" @click="viewLeaderboard">
         🏆 排行榜
       </button>
-      <button 
-        v-if="!authStore.isAuthenticated" 
-        class="btn btn-secondary login-btn-main" 
-        @click="goToLogin"
-      >
-        🔐 登录/注册
-      </button>
     </div>
 
     <div class="features-section">
@@ -206,18 +199,6 @@ const handleLogout = async () => {
   margin-bottom: 4rem;
   flex-wrap: wrap;
   justify-content: center;
-}
-
-.login-btn-main {
-  border-color: var(--accent-color);
-  box-shadow: 0 0 15px rgba(0, 255, 136, 0.3);
-}
-
-.login-btn-main:hover {
-  background: var(--accent-color);
-  color: var(--primary-bg);
-  transform: translateY(-2px);
-  box-shadow: 0 4px 20px rgba(0, 255, 136, 0.5);
 }
 
 .btn-primary {

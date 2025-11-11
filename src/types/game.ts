@@ -280,6 +280,8 @@ export interface GameState {
   seasonSeed: string
   enemiesDefeated?: number
   bossDefeated?: number // Boss被击败的层数
+  highestScore?: number // 最高分数
+  highestLevel?: number // 最高层数
 }
 
 // 关卡配置
