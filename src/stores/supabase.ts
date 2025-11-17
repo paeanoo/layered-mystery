@@ -2,12 +2,14 @@ import { createClient } from '@supabase/supabase-js'
 import type { Database } from '../types/supabase'
 
 // Supabase 配置
+// 注意：线上部署时请在环境变量中设置 VITE_SUPABASE_URL 和 VITE_SUPABASE_ANON_KEY
+// 这里的默认值只用于本地快速调试，正式环境不要依赖这些默认值
 const supabaseUrl = import.meta.env.VITE_SUPABASE_URL || 'https://jrumbdycdgenmjtjdkis.supabase.co'
 const supabaseKey = import.meta.env.VITE_SUPABASE_ANON_KEY || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImpydW1iZHljZGdlbm1qdGpka2lzIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjExMDI1NjIsImV4cCI6MjA3NjY3ODU2Mn0.1wGEVzLdG656KL5X_AulzWVMNCuuLSXf_2svDDg9jBY'
 
-// 检查配置是否有效
-const isSupabaseConfigured = supabaseUrl.includes('jrumbdycdgenmjtjdkis.supabase.co') && 
-                            supabaseKey.length > 100
+// 检查配置是否有效：只要 URL 和 Key 都有值就认为已配置
+// 不再强绑定到特定项目 ID，避免线上环境使用自己项目时被误判为“未配置”
+const isSupabaseConfigured = !!supabaseUrl && !!supabaseKey
 
 export const supabase = isSupabaseConfigured 
   ? createClient<Database>(supabaseUrl, supabaseKey)
